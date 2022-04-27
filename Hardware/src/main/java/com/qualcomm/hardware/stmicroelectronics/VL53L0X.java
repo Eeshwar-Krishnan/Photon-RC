@@ -45,6 +45,8 @@ import com.qualcomm.robotcore.util.TypeConversion;
 
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 
+import java.util.concurrent.TimeUnit;
+
 import static com.qualcomm.hardware.stmicroelectronics.VL53L0X.Register.DYNAMIC_SPAD_NUM_REQUESTED_REF_SPAD;
 import static com.qualcomm.hardware.stmicroelectronics.VL53L0X.Register.DYNAMIC_SPAD_REF_EN_START_OFFSET;
 import static com.qualcomm.hardware.stmicroelectronics.VL53L0X.Register.FINAL_RANGE_CONFIG_MIN_COUNT_RATE_RTN_LIMIT;
@@ -119,6 +121,34 @@ public class VL53L0X extends I2cDeviceSynchDevice<I2cDeviceSynch> implements Dis
      */
     public boolean didTimeoutOccur() {
         return did_timeout;
+    }
+
+    /**
+     * The amount of time since the last new read from the sensor
+     */
+    public long getTimeSinceLastMeasurement(TimeUnit unit){
+        return readTimer.time(unit);
+    }
+
+    /**
+     * Sets the accuracy mode of the sensor. Higher accuracy modes refresh slower, faster accuracy modes are less accurate.
+     *
+     * HIGH_SPEED: Fastest update rate, updates every 33ms. Default operation mode
+     * BALANCED: Mix of accuracy and speed, updates every 75ms
+     * HIGH_ACCURACY: Best accuracy, updates every 150ms
+     */
+    public void setAccuracyMode(ACCURACY_MODE mode){
+        switch (mode){
+            case HIGH_SPEED:
+                setMeasurementTimingBudget(33 * 1000);
+                break;
+            case BALANCED:
+                setMeasurementTimingBudget(75 * 1000);
+                break;
+            case HIGH_ACCURACY:
+                setMeasurementTimingBudget(150 * 1000);
+                break;
+        }
     }
 
     //***********************************************************************************************
@@ -221,6 +251,12 @@ public class VL53L0X extends I2cDeviceSynchDevice<I2cDeviceSynch> implements Dis
         }
     }
 
+    public enum ACCURACY_MODE{
+        HIGH_SPEED,
+        BALANCED,
+        HIGH_ACCURACY
+    }
+
     //***********************************************************************************************
     // Member variables.
     //***********************************************************************************************
@@ -245,6 +281,11 @@ public class VL53L0X extends I2cDeviceSynchDevice<I2cDeviceSynch> implements Dis
     boolean did_timeout = false;
     boolean assume_uninitialized = true;
 
+    //Timer to keep track of when it is probable that new data is available
+    protected ElapsedTime readTimer;
+    //Cached data to return when new data is unavailable
+    protected int readCache;
+
     //***********************************************************************************************
     // Construction and initialization.
     //***********************************************************************************************
@@ -263,6 +304,9 @@ public class VL53L0X extends I2cDeviceSynchDevice<I2cDeviceSynch> implements Dis
 
         ioElapsedTime = new ElapsedTime(ElapsedTime.Resolution.MILLISECONDS);
         did_timeout = false;
+
+        readTimer = new ElapsedTime(ElapsedTime.Resolution.MILLISECONDS);
+        readCache = FAKE_DISTANCE_MM;
     }
 
     // initialize the sensor.
@@ -355,7 +399,7 @@ public class VL53L0X extends I2cDeviceSynchDevice<I2cDeviceSynch> implements Dis
         // GLOBAL_CONFIG_SPAD_ENABLES_REF_0 through _6, so read it from there
         byte ref_spad_map[];
         ref_spad_map =
-        this.deviceClient.read(GLOBAL_CONFIG_SPAD_ENABLES_REF_0.bVal, 6);
+                this.deviceClient.read(GLOBAL_CONFIG_SPAD_ENABLES_REF_0.bVal, 6);
 
         // -- VL53L0X_set_reference_spads() begin (assume NVM values are valid)
 
@@ -968,38 +1012,23 @@ public class VL53L0X extends I2cDeviceSynchDevice<I2cDeviceSynch> implements Dis
     // (readRangeSingleMillimeters() also calls this function after starting a
     // single-shot range measurement)
     protected int readRangeContinuousMillimeters() {
-        if(io_timeout > 0) {
-            ioElapsedTime.reset();
+        if(assume_uninitialized){
+            //We are assuming the sensor is not initialized so we fail quickly
+            return FAKE_DISTANCE_MM;
         }
-        if (assume_uninitialized) {
-            return FAKE_DISTANCE_MM; // We have strong evidence that the sensor is not initialized, so we fail fast.
-        }
-        while ((readReg(RESULT_INTERRUPT_STATUS) & 0x07) == 0) {
-            if ((did_timeout && deviceClient.getHealthStatus() == HealthStatus.UNHEALTHY) || Thread.currentThread().isInterrupted()) {
-                /* The last time we tried to read the sensor, it timed out, and the read attempt
-                   we just made also failed (indicated by the status being unhealthy).
-                   Exit now so that we don't bottleneck the whole system. */
-                return FAKE_DISTANCE_MM;
-            }
-            if (ioElapsedTime.milliseconds() > io_timeout) {
-                did_timeout = true;
-                if (deviceClient.getHealthStatus() == HealthStatus.HEALTHY) {
-                    /* If we are able to communicate with the device (it is healthy) and yet we got
-                        a timeout,it's safe to assume that the device is not currently initialized. */
-                    assume_uninitialized = true;
-                    // TODO(Noah): Display warning that the sensor needs to be re-initialized
-                }
-                return FAKE_DISTANCE_MM;
+
+        if(readTimer.milliseconds() > TimeUnit.MICROSECONDS.toMillis(measurement_timing_budget_us) //Its been long enough that new data should be available
+                || readCache == FAKE_DISTANCE_MM){ //Or we never had data in the first place
+            if((readReg(RESULT_INTERRUPT_STATUS) & 0x07) != 0){
+                //The device is indicating there is new data available so lets read and cache it
+                readCache = TypeConversion.byteArrayToShort(deviceClient.read(RESULT_RANGE_STATUS.bVal + 10, 2));
+                //Clear the interrupt flag and reset the timer so we don't waste time polling the device constantly while reading
+                writeReg(SYSTEM_INTERRUPT_CLEAR.bVal, 0x01);
+                readTimer.reset();
             }
         }
-        did_timeout = false; // The read succeeded. Clear the timeout flag.
 
-        // assumptions: Linearity Corrective Gain is 1000 (default);
-        // fractional ranging is not enabled
-        int range = (int)TypeConversion.byteArrayToShort(deviceClient.read(RESULT_RANGE_STATUS.bVal + 10, 2));
-        writeReg(SYSTEM_INTERRUPT_CLEAR.bVal, 0x01);
-
-        return range;
+        return readCache;
     }
 
     //***********************************************************************************************
