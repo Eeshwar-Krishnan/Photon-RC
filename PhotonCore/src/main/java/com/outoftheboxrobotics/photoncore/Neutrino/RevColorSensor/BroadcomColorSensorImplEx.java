@@ -30,12 +30,14 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
 TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
-package com.qualcomm.hardware.broadcom;
+package com.outoftheboxrobotics.photoncore.Neutrino.RevColorSensor;
 
 import android.graphics.Color;
 import androidx.annotation.ColorInt;
 import androidx.annotation.NonNull;
 
+import com.qualcomm.hardware.broadcom.BroadcomColorSensor;
+import com.qualcomm.hardware.lynx.LynxI2cDeviceSynch;
 import com.qualcomm.robotcore.hardware.I2cAddr;
 import com.qualcomm.robotcore.hardware.I2cAddrConfig;
 import com.qualcomm.robotcore.hardware.I2cDeviceSynch;
@@ -54,7 +56,7 @@ import java.nio.ByteOrder;
  * BroadcomColorSensorImpl is used to support the Rev Robotics V3 color sensor
  */
 @SuppressWarnings("WeakerAccess")
-public abstract class BroadcomColorSensorImpl extends I2cDeviceSynchDeviceWithParameters<I2cDeviceSynchSimple, BroadcomColorSensor.Parameters>
+public abstract class BroadcomColorSensorImplEx extends I2cDeviceSynchDeviceWithParameters<I2cDeviceSynchSimple, BroadcomColorSensor.Parameters>
         implements BroadcomColorSensor, I2cAddrConfig, Light
 {
     //----------------------------------------------------------------------------------------------
@@ -66,13 +68,15 @@ public abstract class BroadcomColorSensorImpl extends I2cDeviceSynchDeviceWithPa
     int red = 0, green = 0, blue = 0, alpha = 0;
     float softwareGain = 1;
 
+    long lastRead = 0, measurementDelay = 100;
+
     //----------------------------------------------------------------------------------------------
     // Construction
     //----------------------------------------------------------------------------------------------
 
-    protected BroadcomColorSensorImpl(BroadcomColorSensor.Parameters params,
-                                      I2cDeviceSynchSimple deviceClient,
-                                      boolean isOwned)
+    protected BroadcomColorSensorImplEx(BroadcomColorSensor.Parameters params,
+                                        I2cDeviceSynchSimple deviceClient,
+                                        boolean isOwned)
     {
         super(deviceClient, isOwned, params);
         this.deviceClient.setLogging(this.parameters.loggingEnabled);
@@ -82,6 +86,11 @@ public abstract class BroadcomColorSensorImpl extends I2cDeviceSynchDeviceWithPa
         this.registerArmingStateCallback(true);
 
         this.engage();
+        internalInitialize(parameters);
+
+        if(deviceClient instanceof LynxI2cDeviceSynch){
+            ((LynxI2cDeviceSynch) deviceClient).setBusSpeed(LynxI2cDeviceSynch.BusSpeed.FAST_400K);
+        }
     }
 
     //----------------------------------------------------------------------------------------------
@@ -229,6 +238,32 @@ public abstract class BroadcomColorSensorImpl extends I2cDeviceSynchDeviceWithPa
         int val = (res.bVal << 3) | rate.bVal;
         RobotLog.vv(TAG, "setPSMeasRate(0x%02x)", (byte) val);
         write8(Register.PS_MEAS_RATE, (byte) val);
+
+        switch (rate){
+            case RES:
+                break;
+            case R6_25ms:
+                measurementDelay = 7;
+                break;
+            case R12_5ms:
+                measurementDelay = 13;
+                break;
+            case R25ms:
+                measurementDelay = 25;
+                break;
+            case R50ms:
+                measurementDelay = 50;
+                break;
+            case R100ms:
+                measurementDelay = 100;
+                break;
+            case R200ms:
+                measurementDelay = 200;
+                break;
+            case R400ms:
+                measurementDelay = 400;
+                break;
+        }
     }
 
     protected void setLSRateAndRes(LSResolution res, LSMeasurementRate rate)
@@ -267,16 +302,10 @@ public abstract class BroadcomColorSensorImpl extends I2cDeviceSynchDeviceWithPa
 
     private void updateColors()
     {
-        // Check for updated color values. If new data is not ready yet, keep the last read values
-        byte mainStatus;
-        byte[] data = null;
+        long now = System.currentTimeMillis();
+        if(now - lastRead > measurementDelay) {
+            byte[] data;
 
-        // check data status
-        mainStatus = read8(Register.MAIN_STATUS);
-
-        // update color values if LS_DATA is valid
-        if (testBits(mainStatus, MainStatus.LS_DATA_STATUS.bVal))
-        {
             // Read red, green and blue values
             final int cbRead = 9;
             data = read(Register.LS_DATA_GREEN, cbRead);
@@ -291,16 +320,16 @@ public abstract class BroadcomColorSensorImpl extends I2cDeviceSynchDeviceWithPa
             this.alpha = (this.red + this.green + this.blue) / 3;
 
             // normalize to [0, 1]
-            this.colors.red = Range.clip(((float)this.red * this.softwareGain) / parameters.colorSaturation, 0f, 1f);
-            this.colors.green = Range.clip(((float)this.green * this.softwareGain) / parameters.colorSaturation, 0f, 1f);
-            this.colors.blue = Range.clip(((float)this.blue * this.softwareGain) / parameters.colorSaturation, 0f, 1f);
+            this.colors.red = Range.clip(((float) this.red * this.softwareGain) / parameters.colorSaturation, 0f, 1f);
+            this.colors.green = Range.clip(((float) this.green * this.softwareGain) / parameters.colorSaturation, 0f, 1f);
+            this.colors.blue = Range.clip(((float) this.blue * this.softwareGain) / parameters.colorSaturation, 0f, 1f);
 
             // apply inverse squared law of light to get readable brightness value, stored in alpha channel
             // scale to 65535
-            float avg = (float)(this.red + this.green + this.blue) / 3;
+            float avg = (float) (this.red + this.green + this.blue) / 3;
             this.colors.alpha = (float) (-(65535f / (Math.pow(avg, 2) + 65535)) + 1);
 
-            RobotLog.e("********NEW READ********");
+            lastRead = System.currentTimeMillis();
         }
     }
 

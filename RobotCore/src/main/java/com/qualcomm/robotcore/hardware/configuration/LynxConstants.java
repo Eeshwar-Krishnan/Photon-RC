@@ -155,7 +155,7 @@ public class LynxConstants
     public final static int INDICATOR_LED_INVITE_DIALOG_ACTIVE = 2;
     public final static int INDICATOR_LED_BOOT = 4;
 
-    public static final int SERIAL_MODULE_BAUD_RATE = 460800;
+    public static final int SERIAL_MODULE_BAUD_RATE = 460800;//TODO: return this to 460800
     public static final SerialNumber SERIAL_NUMBER_EMBEDDED = SerialNumber.createEmbedded();
 
     public final static int USB_BAUD_RATE = 460800;

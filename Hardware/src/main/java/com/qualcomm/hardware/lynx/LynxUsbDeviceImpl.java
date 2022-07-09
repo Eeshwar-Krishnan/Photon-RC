@@ -43,6 +43,7 @@ import com.qualcomm.hardware.bosch.BNO055IMUImpl;
 import com.qualcomm.hardware.lynx.commands.LynxDatagram;
 import com.qualcomm.hardware.lynx.commands.LynxMessage;
 import com.qualcomm.hardware.lynx.commands.core.LynxFirmwareVersionManager;
+import com.qualcomm.hardware.lynx.commands.core.LynxGetBulkInputDataCommand;
 import com.qualcomm.hardware.lynx.commands.standard.LynxDiscoveryCommand;
 import com.qualcomm.hardware.lynx.commands.standard.LynxDiscoveryResponse;
 import com.qualcomm.hardware.modernrobotics.ModernRoboticsUsbDevice;
@@ -138,6 +139,8 @@ public class LynxUsbDeviceImpl extends ArmableUsbDevice implements LynxUsbDevice
     protected final static int msResetRecovery      = 200;      // more of a guess than anything
 
     protected final static String SEPARATOR         = " / ";
+
+    private long lastRecieved = 0;//REMOVE
 
     //----------------------------------------------------------------------------------------------
     // Construction
@@ -986,6 +989,7 @@ public class LynxUsbDeviceImpl extends ArmableUsbDevice implements LynxUsbDevice
                     byte[] bytes = datagram.toByteArray();
 
                     try {
+                        lastRecieved = System.nanoTime();//REMOVE
                         this.robotUsbDevice.write(bytes);
                         }
                     catch (RobotUsbException|RuntimeException e)    // RuntimeException is just paranoia
@@ -1078,6 +1082,7 @@ public class LynxUsbDeviceImpl extends ArmableUsbDevice implements LynxUsbDevice
                                 {
                                 // Tell the corresponding module, if it's for something we know about
                                 LynxModule module = findKnownModule(datagram.getSourceModuleAddress());
+                                //RobotLog.ii("SEND_TIME_MS", String.valueOf((System.nanoTime() - lastRecieved)/(1E+6)));//REMOVE
                                 if (module != null)
                                     {
                                     module.onIncomingDatagramReceived(datagram);

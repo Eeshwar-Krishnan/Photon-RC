@@ -20,4 +20,5 @@ dependencies {
     implementation project(':FtcCommon')
 
     implementation 'org.firstinspires.ftc:gameAssets-FreightFrenzy:1.0.0'
+    implementation project(':PhotonCore')
 }

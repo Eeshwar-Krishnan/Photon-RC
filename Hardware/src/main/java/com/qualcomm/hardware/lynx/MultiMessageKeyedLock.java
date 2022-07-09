@@ -128,7 +128,7 @@ public class MultiMessageKeyedLock extends MessageKeyedLock{
     }
 
     public void addThreadpool(ArrayList<Thread> threads){
-        for(int i = 0; i < locks.size(); i ++){
+        for(int i = 0; (i < (locks.size()) && i < (threads.size())); i ++){
             assignedLocks.put(threads.get(i), locks.get(i));
         }
     }
