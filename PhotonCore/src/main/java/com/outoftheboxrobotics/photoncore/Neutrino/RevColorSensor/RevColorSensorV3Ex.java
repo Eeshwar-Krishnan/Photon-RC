@@ -32,12 +32,18 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 package com.outoftheboxrobotics.photoncore.Neutrino.RevColorSensor;
 
+import androidx.annotation.ColorInt;
+
+import com.qualcomm.hardware.rev.RevColorSensorV3;
 import com.qualcomm.robotcore.hardware.ColorRangeSensor;
 import com.qualcomm.robotcore.hardware.DistanceSensor;
 import com.qualcomm.robotcore.hardware.HardwareDevice;
 import com.qualcomm.robotcore.hardware.I2cDeviceSynchSimple;
+import com.qualcomm.robotcore.hardware.NormalizedRGBA;
 import com.qualcomm.robotcore.hardware.OpticalDistanceSensor;
 import com.qualcomm.robotcore.util.Range;
+import com.qualcomm.robotcore.util.RobotLog;
+import com.qualcomm.robotcore.util.TypeConversion;
 
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 
@@ -51,135 +57,115 @@ import java.util.Locale;
  *
  */
 @SuppressWarnings("WeakerAccess")
-public class RevColorSensorV3Ex extends BroadcomColorSensorImplEx implements DistanceSensor, OpticalDistanceSensor, ColorRangeSensor
+public class RevColorSensorV3Ex extends RevColorSensorV3
 {
-    //----------------------------------------------------------------------------------------------
-    // State
-    //----------------------------------------------------------------------------------------------
-
-    protected static final double apiLevelMin = 0.0;
-    protected static final double apiLevelMax = 1.0;
-
-    /**
-     * Experimentally determined constants for converting optical measurements to distance.
-     */
-    double aParam = 325.961;
-    double binvParam = -0.75934;
-    double cParam = 26.980;
-    double maxDist = 6.0; // inches
-
-    //----------------------------------------------------------------------------------------------
-    // Construction
-    //----------------------------------------------------------------------------------------------
+    NormalizedRGBA colors = new NormalizedRGBA();
+    long lastRead = 0, measurementDelay = 100;
+    int red = 0, green = 0, blue = 0, alpha = 0;
 
     public RevColorSensorV3Ex(I2cDeviceSynchSimple deviceClient)
     {
-        super(RevColorSensorV3Ex.Parameters.createForAPDS9151(), deviceClient, true);
-    }
-
-    //----------------------------------------------------------------------------------------------
-    // HardwareDevice
-    //----------------------------------------------------------------------------------------------
-
-    @Override
-    public String getDeviceName()
-    {
-        return "Rev Color Sensor v3";
+        super(deviceClient);
     }
 
     @Override
-    public HardwareDevice.Manufacturer getManufacturer()
+    protected void setPSRateAndRes(PSResolution res, PSMeasurementRate rate)
     {
-        return Manufacturer.Broadcom;
+        int val = (res.bVal << 3) | rate.bVal;
+        RobotLog.vv(TAG, "setPSMeasRate(0x%02x)", (byte) val);
+        write8(Register.PS_MEAS_RATE, (byte) val);
+
+        switch (rate){
+            case RES:
+                break;
+            case R6_25ms:
+                measurementDelay = 7;
+                break;
+            case R12_5ms:
+                measurementDelay = 13;
+                break;
+            case R25ms:
+                measurementDelay = 25;
+                break;
+            case R50ms:
+                measurementDelay = 50;
+                break;
+            case R100ms:
+                measurementDelay = 100;
+                break;
+            case R200ms:
+                measurementDelay = 200;
+                break;
+            case R400ms:
+                measurementDelay = 400;
+                break;
+        }
     }
 
-    //----------------------------------------------------------------------------------------------
-    // OpticalDistanceSensor / LightSensor
-    //----------------------------------------------------------------------------------------------
+    @Override
+    public synchronized int red() { updateColors(); return this.red; }
 
-    @Override public double getLightDetected()
+    @Override
+    public synchronized int green() { updateColors(); return this.green; }
+
+    @Override
+    public synchronized int blue() { updateColors(); return this.blue; }
+
+    @Override
+    public synchronized int alpha() { updateColors(); return this.alpha; }
+
+    @Override
+    public synchronized @ColorInt int argb() { return getNormalizedColors().toColor(); }
+
+    private void updateColors()
     {
-        return Range.clip(
-                Range.scale(getRawLightDetected(), 0, getRawLightDetectedMax(), apiLevelMin, apiLevelMax),
-                apiLevelMin, apiLevelMax);
+        long now = System.currentTimeMillis();
+        if(now - lastRead > measurementDelay) {
+            byte[] data;
+
+            // Read red, green and blue values
+            final int cbRead = 9;
+            data = read(Register.LS_DATA_GREEN, cbRead);
+
+            final int dib = 0;
+            this.green = TypeConversion.unsignedShortToInt(TypeConversion.byteArrayToShort(data, dib, ByteOrder.LITTLE_ENDIAN));
+            this.blue = Range.clip((int) (1.55 * TypeConversion.unsignedShortToInt(TypeConversion.byteArrayToShort(
+                    data, dib + 3, ByteOrder.LITTLE_ENDIAN))), 0, 65535);
+            this.red = Range.clip((int) (1.07 * TypeConversion.unsignedShortToInt(TypeConversion.byteArrayToShort(
+                    data, dib + 6, ByteOrder.LITTLE_ENDIAN))), 0, 65535);
+
+            this.alpha = (this.red + this.green + this.blue) / 3;
+
+            // normalize to [0, 1]
+            this.colors.red = Range.clip(((float) this.red * getGain()) / parameters.colorSaturation, 0f, 1f);
+            this.colors.green = Range.clip(((float) this.green * getGain()) / parameters.colorSaturation, 0f, 1f);
+            this.colors.blue = Range.clip(((float) this.blue * getGain()) / parameters.colorSaturation, 0f, 1f);
+
+            // apply inverse squared law of light to get readable brightness value, stored in alpha channel
+            // scale to 65535
+            float avg = (float) (this.red + this.green + this.blue) / 3;
+            this.colors.alpha = (float) (-(65535f / (Math.pow(avg, 2) + 65535)) + 1);
+
+            lastRead = System.currentTimeMillis();
+        }
     }
 
-    @Override public double getRawLightDetected()
-    {
-        return rawOptical();
+    @Override
+    public NormalizedRGBA getNormalizedColors() { updateColors(); return this.colors; }
+
+    public void setUpdateRate(UPDATE_RATE updateRate){
+        switch (updateRate){
+            case DEFAULT:
+                setPSRateAndRes(PSResolution.R11BIT, PSMeasurementRate.R100ms);
+                break;
+            case HIGH_SPEED:
+                setPSRateAndRes(PSResolution.R11BIT, PSMeasurementRate.R6_25ms);
+                break;
+        }
     }
 
-    @Override public double getRawLightDetectedMax()
-    {
-        return parameters.proximitySaturation;
-    }
-
-    @Override public String status()
-    {
-        return String.format(Locale.getDefault(), "%s on %s", getDeviceName(), getConnectionInfo());
-    }
-
-    //----------------------------------------------------------------------------------------------
-    // DistanceSensor
-    //----------------------------------------------------------------------------------------------
-
-    /**
-     * Returns a calibrated, linear sense of distance as read by the infrared proximity
-     * part of the sensor. Distance is measured to the plastic housing at the front of the
-     * sensor.
-     *
-     * Natively, the raw optical signal follows an inverse square law. Here, parameters have
-     * been fitted to turn that into a <em>linear</em> measure of distance. The function fitted
-     * was of the form:
-     *
-     *      RawOptical = a * distance^b + c
-     *
-     * The calibration was performed with proximity sensor pulses set to 32, LED driver current set
-     * to 125ma, and measurement rate set to 100ms. If the end user chooses to use different
-     * settings, the device will need to be recalibrated.
-     *
-     * Additionally, calibration was performed using card stock measured head on. Actual raw values
-     * measured will depend on reflectivity and angle of surface. End user should experimentally
-     * verify calibration is appropriate for their own application.
-     *
-     * @param unit  the unit of distance in which the result should be returned
-     * @return      the currently measured distance in the indicated units. will always be between
-     *              0.25 and 6.0 inches.
-     */
-    @Override public double getDistance(DistanceUnit unit)
-    {
-        int rawOptical = rawOptical();
-        double inOptical = inFromOptical(rawOptical);
-        return unit.fromUnit(DistanceUnit.INCH, inOptical);
-    }
-
-    /**
-     * Converts a raw optical inverse-square reading into a fitted, calibrated linear reading in
-     * INCHES.
-     */
-    protected double inFromOptical(int rawOptical)
-    {
-        // can't have a negative number raised to a fractional power. In this situation need to
-        // return max value
-        if(rawOptical <= cParam) return maxDist;
-
-        // compute the distance based on an inverse power law, i.e.
-        //  distance = ((RawOptical - c)/a)^(1/b)
-        double dist = Math.pow((rawOptical - cParam)/aParam, binvParam);
-
-        // distance values change very rapidly with small values of RawOptical and become
-        // impractical to fit to a distribution. Returns are capped to an experimentally determined
-        // max value.
-        return Math.min(dist, maxDist);
-    }
-
-    //----------------------------------------------------------------------------------------------
-    // Raw sensor data
-    //----------------------------------------------------------------------------------------------
-
-    public int rawOptical()
-    {
-        // return raw value with overflow bit masked
-        return (readUnsignedShort(Register.PS_DATA, ByteOrder.LITTLE_ENDIAN) & 0x7FF);
+    public enum UPDATE_RATE{
+        DEFAULT,
+        HIGH_SPEED
     }
 }

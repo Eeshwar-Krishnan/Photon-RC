@@ -3,8 +3,8 @@ package com.outoftheboxrobotics.photoncore;
 import android.content.Context;
 
 
-import androidx.collection.CircularArray;
-
+import com.outoftheboxrobotics.photoncore.Neutrino.Rev2MSensor.Rev2mDistanceSensorEx;
+import com.outoftheboxrobotics.photoncore.Neutrino.RevColorSensor.RevColorSensorV3Ex;
 import com.qualcomm.ftccommon.FtcEventLoop;
 import com.qualcomm.hardware.lynx.LynxI2cDeviceSynch;
 import com.qualcomm.hardware.lynx.LynxModule;
@@ -16,14 +16,13 @@ import com.qualcomm.hardware.lynx.commands.LynxCommand;
 import com.qualcomm.hardware.lynx.commands.LynxDatagram;
 import com.qualcomm.hardware.lynx.commands.LynxMessage;
 import com.qualcomm.hardware.lynx.commands.LynxRespondable;
-import com.qualcomm.hardware.lynx.commands.core.LynxGetBulkInputDataCommand;
-import com.qualcomm.hardware.lynx.commands.core.LynxGetBulkInputDataResponse;
-import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadSingleByteCommand;
+import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadStatusQueryCommand;
 import com.qualcomm.hardware.lynx.commands.core.LynxI2cWriteReadMultipleBytesCommand;
-import com.qualcomm.hardware.lynx.commands.core.LynxI2cWriteSingleByteCommand;
 import com.qualcomm.hardware.lynx.commands.core.LynxSetMotorConstantPowerCommand;
 import com.qualcomm.hardware.lynx.commands.core.LynxSetServoPulseWidthCommand;
 import com.qualcomm.hardware.lynx.commands.standard.LynxAck;
+import com.qualcomm.hardware.rev.Rev2mDistanceSensor;
+import com.qualcomm.hardware.rev.RevColorSensorV3;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.OpModeManager;
 import com.qualcomm.robotcore.eventloop.opmode.OpModeManagerNotifier;
@@ -41,13 +40,12 @@ import org.firstinspires.ftc.robotcore.internal.opmode.OpModeManagerImpl;
 import org.firstinspires.ftc.robotcore.internal.usb.exception.RobotUsbException;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications {
     protected static final PhotonCore instance = new PhotonCore();
@@ -57,7 +55,7 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
     private Thread thisThread = null;
     private Object syncLock;
 
-    private final Object bulkDataSync = new Object();
+    private final Object messageSync = new Object();
 
     private RobotUsbDevice robotUsbDevice;
 
@@ -65,7 +63,24 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
 
     private OpModeManagerImpl opModeManager;
 
-    private volatile LynxI2cWriteReadMultipleBytesCommand gyroSetCommand = null;
+    public static class ExperimentalParameters{
+        private final AtomicBoolean singlethreadedOptimized = new AtomicBoolean(true);
+        private final AtomicInteger maximumParallelCommands = new AtomicInteger(8);
+
+        public void setSinglethreadedOptimized(boolean state){
+            this.singlethreadedOptimized.set(state);
+        }
+
+        public boolean setMaximumParallelCommands(int maximumParallelCommands){
+            if(maximumParallelCommands > 9 || maximumParallelCommands <= 0){
+                return false;
+            }
+            this.maximumParallelCommands.set(maximumParallelCommands);
+            return true;
+        }
+    }
+
+    public static ExperimentalParameters experimental = new ExperimentalParameters();
 
     public PhotonCore(){
         CONTROL_HUB = null;
@@ -95,50 +110,68 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
 
         PhotonLynxModule photonModule = (PhotonLynxModule) command.getModule();
 
-        while(photonModule.getUnfinishedCommands().size() > 8);
+        synchronized (instance.messageSync) {
+            while (((((PhotonLynxModule)CONTROL_HUB).getUnfinishedCommands().size() + (EXPANSION_HUB == null ? 0 : ((PhotonLynxModule)EXPANSION_HUB).getUnfinishedCommands().size())) > experimental.maximumParallelCommands.get()));
 
-        byte messageNum = photonModule.getNewMessageNumber();
-
-        command.setMessageNumber(messageNum);
-
-        try {
-            LynxDatagram datagram = new LynxDatagram(command);
-            command.setSerialization(datagram);
-
-            if(command.isAckable() || command.isResponseExpected()){
-                photonModule.getUnfinishedCommands().put(command.getMessageNumber(), (LynxRespondable)command);
-            }
-
-            byte[] bytes = datagram.toByteArray();
-
-            if(instance.gyroSetCommand == null){
-                if(command instanceof LynxI2cWriteReadMultipleBytesCommand){
-                    if(bytes[bytes.length - 3] == 0X1A){
-                        RobotLog.e("************************************GYRO COMMAND FOUND***************************************");
-                        instance.gyroSetCommand = (LynxI2cWriteReadMultipleBytesCommand) command;
-                        return true;
+            if(!experimental.singlethreadedOptimized.get()) {
+                boolean noSimilar = false;
+                while (!noSimilar) {
+                    noSimilar = true;
+                    for (LynxRespondable respondable : photonModule.getUnfinishedCommands().values()) {
+                        if (instance.isSimilar(respondable, command)) {
+                            noSimilar = false;
+                        }
                     }
                 }
             }
 
-            synchronized (instance.syncLock) {
-                instance.robotUsbDevice.write(bytes);
-            }
-            //RobotLog.ii("PhotonCore", "Wrote " + bytes.length + " bytes " + photonModule.getUnfinishedCommands().size());
+            byte messageNum = photonModule.getNewMessageNumber();
 
-            if(shouldAckImmediately(command)){
-                command.onAckReceived(new LynxAck(photonModule, false));
+            command.setMessageNumber(messageNum);
+
+            try {
+                LynxDatagram datagram = new LynxDatagram(command);
+                command.setSerialization(datagram);
+
+                if (command.isAckable() || command.isResponseExpected()) {
+                    photonModule.getUnfinishedCommands().put(command.getMessageNumber(), (LynxRespondable) command);
+                }
+
+                byte[] bytes = datagram.toByteArray();
+
+                double msLatency = 0;
+                synchronized (instance.syncLock) {
+                    long start = System.nanoTime();
+                    instance.robotUsbDevice.write(bytes);
+                    long stop = System.nanoTime();
+                    msLatency = (stop - start) * 1.0e-6;
+                }
+                //RobotLog.ii("PhotonCore", "Wrote " + bytes.length + " bytes " + photonModule.getUnfinishedCommands().size() + " | " + (msLatency));
+
+                if (shouldAckImmediately(command)) {
+                    command.onAckReceived(new LynxAck(photonModule, false));
+                }
+            } catch (LynxUnsupportedCommandException | RobotUsbException e) {
+                e.printStackTrace();
             }
-        } catch (LynxUnsupportedCommandException | RobotUsbException e) {
-            e.printStackTrace();
         }
 
         return true;
     }
 
+    protected static boolean shouldParallelize(LynxCommand command){
+        return (command instanceof LynxSetMotorConstantPowerCommand) ||
+                (command instanceof LynxSetServoPulseWidthCommand);
+    }
+
     protected static boolean shouldAckImmediately(LynxCommand command){
         return (command instanceof LynxSetMotorConstantPowerCommand) ||
                 (command instanceof LynxSetServoPulseWidthCommand);
+    }
+
+    private boolean isSimilar(LynxRespondable respondable1, LynxRespondable respondable2){
+        return (respondable1.getDestModuleAddress() == respondable2.getDestModuleAddress()) &&
+                (respondable1.getCommandNumber() == respondable2.getCommandNumber());
     }
 
     protected static LynxMessage getCacheResponse(LynxCommand command){
@@ -148,15 +181,6 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
     @Override
     public void run() {
         while(threadEnabled.get()){
-            if(gyroSetCommand != null){
-                try {
-                    registerSend(gyroSetCommand);
-                } catch (LynxUnsupportedCommandException e) {
-                    e.printStackTrace();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }
 
             try {
                 Thread.sleep(5);
@@ -251,11 +275,12 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
             } catch (IllegalAccessException e) {
                 e.printStackTrace();
             } }
+
+        HashMap<String, HardwareDevice> replacedNeutrino = new HashMap<>(), removedNeutrino = new HashMap<>();
         for(HardwareDevice device : map.getAll(HardwareDevice.class)){
             if(!(device instanceof LynxModule)){
                 RobotLog.i(map.getNamesOf(device).toArray()[0].toString());
                 if(device instanceof I2cDeviceSynchDevice){
-                    RobotLog.i("PhotonCore Found I2cDeviceSynchDevice");
                     try {
                         I2cDeviceSynchSimple device2 = (I2cDeviceSynchSimple) ReflectionUtils.getField(device.getClass(), "deviceClient").get(device);
                         if(!(device2 instanceof LynxI2cDeviceSynch)){
@@ -267,7 +292,6 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
                         e.printStackTrace();
                     }
                 }else if (device instanceof I2cDeviceSynchSimple){
-                    RobotLog.i("PhotonCore Found I2cDeviceSynchSimple");
                     try {
                         I2cDeviceSynchSimple device2 = (I2cDeviceSynchSimple) ReflectionUtils.getField(device.getClass(), "deviceClient").get(device);
                         setLynxObject(device2, replacements);
@@ -277,7 +301,34 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
                 }else {
                     setLynxObject(device, replacements);
                 }
+                if(device instanceof Rev2mDistanceSensor){
+                    I2cDeviceSynch tmp = null;
+                    try {
+                        tmp = (I2cDeviceSynch) ReflectionUtils.getField(device.getClass(), "deviceClient").get(device);
+                    } catch (IllegalAccessException e) {
+                        e.printStackTrace();
+                    }
+                    Rev2mDistanceSensorEx vl53L0XEx = new Rev2mDistanceSensorEx(tmp);
+                    replacedNeutrino.put((String) map.getNamesOf(device).toArray()[0], vl53L0XEx);
+                    removedNeutrino.put((String) map.getNamesOf(device).toArray()[0], device);
+                }
+                if(device instanceof RevColorSensorV3){
+                    RevColorSensorV3Ex revColorSensorV3Ex;
+                    try {
+                        I2cDeviceSynchSimple tmp = (I2cDeviceSynchSimple) ReflectionUtils.getField(device.getClass(), "deviceClient").get(device);
+                        revColorSensorV3Ex = new RevColorSensorV3Ex(tmp);
+                        replacedNeutrino.put((String) map.getNamesOf(device).toArray()[0], revColorSensorV3Ex);
+                        removedNeutrino.put((String) map.getNamesOf(device).toArray()[0], device);
+                    } catch (IllegalAccessException e) {
+                        e.printStackTrace();
+                    }
+                }
             }
+        }
+
+        for(String s : replacedNeutrino.keySet()){
+            map.remove(s, removedNeutrino.get(s));
+            map.put(s, replacedNeutrino.get(s));
         }
 
         if(thisThread == null || !thisThread.isAlive()){

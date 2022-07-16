@@ -1,13 +1,10 @@
 package org.firstinspires.ftc.photoncore;
 
-import com.outoftheboxrobotics.photoncore.Neutrino.Rev2MSensor.VL53L0XEx;
 import com.outoftheboxrobotics.photoncore.Neutrino.RevColorSensor.RevColorSensorV3Ex;
 import com.outoftheboxrobotics.photoncore.ReflectionUtils;
-import com.qualcomm.hardware.rev.Rev2mDistanceSensor;
 import com.qualcomm.hardware.rev.RevColorSensorV3;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
-import com.qualcomm.robotcore.hardware.I2cDeviceSynch;
 import com.qualcomm.robotcore.hardware.I2cDeviceSynchSimple;
 import com.qualcomm.robotcore.util.RobotLog;
 

@@ -1,6 +1,6 @@
 package org.firstinspires.ftc.photoncore;
 
-import com.outoftheboxrobotics.photoncore.Neutrino.Rev2MSensor.VL53L0XEx;
+import com.outoftheboxrobotics.photoncore.Neutrino.Rev2MSensor.Rev2mDistanceSensorEx;
 import com.outoftheboxrobotics.photoncore.ReflectionUtils;
 import com.qualcomm.hardware.rev.Rev2mDistanceSensor;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
@@ -16,10 +16,10 @@ public class Rev2MTesting extends LinearOpMode {
     public void runOpMode() throws InterruptedException {
         Rev2mDistanceSensor distanceSensor = hardwareMap.get(Rev2mDistanceSensor.class, "sensor");
 
-        VL53L0XEx vl53L0XEx = null;
+        Rev2mDistanceSensorEx vl53L0XEx = null;
         try {
             I2cDeviceSynch device = (I2cDeviceSynch) ReflectionUtils.getField(distanceSensor.getClass(), "deviceClient").get(distanceSensor);
-            vl53L0XEx = new VL53L0XEx(device);
+            vl53L0XEx = new Rev2mDistanceSensorEx(device);
         } catch (IllegalAccessException e) {
             e.printStackTrace();
         }

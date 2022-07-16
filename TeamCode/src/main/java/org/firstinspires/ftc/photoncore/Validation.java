@@ -1,7 +1,7 @@
 package org.firstinspires.ftc.photoncore;
 
 import com.outoftheboxrobotics.photoncore.Neutrino.MB1242.MB1242Ex;
-import com.outoftheboxrobotics.photoncore.Neutrino.Rev2MSensor.VL53L0XEx;
+import com.outoftheboxrobotics.photoncore.Neutrino.Rev2MSensor.Rev2mDistanceSensorEx;
 import com.outoftheboxrobotics.photoncore.Neutrino.RevColorSensor.RevColorSensorV3Ex;
 import com.outoftheboxrobotics.photoncore.PhotonCore;
 import com.outoftheboxrobotics.photoncore.ReflectionUtils;
@@ -22,12 +22,14 @@ import com.qualcomm.robotcore.hardware.I2cDeviceSynch;
 import com.qualcomm.robotcore.hardware.I2cDeviceSynchSimple;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.ServoImpl;
-import com.qualcomm.robotcore.util.RobotLog;
 
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
 @TeleOp
-public class TestOpmode extends LinearOpMode {
+public class Validation extends LinearOpMode {
     @Override
     public void runOpMode() throws InterruptedException {
         PhotonCore.CONTROL_HUB.setBulkCachingMode(LynxModule.BulkCachingMode.MANUAL);
@@ -46,23 +48,7 @@ public class TestOpmode extends LinearOpMode {
 
         Rev2mDistanceSensor distanceSensor = hardwareMap.get(Rev2mDistanceSensor.class, "sensor");
 
-        VL53L0XEx vl53L0XEx = null;
-        try {
-            I2cDeviceSynch device = (I2cDeviceSynch) ReflectionUtils.getField(distanceSensor.getClass(), "deviceClient").get(distanceSensor);
-            vl53L0XEx = new VL53L0XEx(device);
-        } catch (IllegalAccessException e) {
-            e.printStackTrace();
-        }
-
         RevColorSensorV3 distanceSensor2 = hardwareMap.get(RevColorSensorV3.class, "color");
-
-        RevColorSensorV3Ex revColorSensorV3Ex = null;
-        try {
-            I2cDeviceSynchSimple device = (I2cDeviceSynchSimple) ReflectionUtils.getField(distanceSensor2.getClass(), "deviceClient").get(distanceSensor2);
-            revColorSensorV3Ex = new RevColorSensorV3Ex(device);
-        } catch (IllegalAccessException e) {
-            e.printStackTrace();
-        }
 
         MB1242Ex mb1242Ex = hardwareMap.get(MB1242Ex.class, "sonic");
 
@@ -88,7 +74,13 @@ public class TestOpmode extends LinearOpMode {
         } catch (LynxNackException e) {
             e.printStackTrace();
         }
-        waitForStart();
+
+        while (!isStarted()){
+            telemetry.addData("2M Validation", distanceSensor instanceof Rev2mDistanceSensorEx);
+            telemetry.addData("Colour Sensor Validation", distanceSensor2 instanceof RevColorSensorV3Ex);
+            telemetry.update();
+        }
+
         double dir = 0.5;
         double power = 0;
         telemetry.setMsTransmissionInterval(50);
@@ -96,6 +88,36 @@ public class TestOpmode extends LinearOpMode {
 
         double[] loopTimes = new double[50];
         int index = 0;
+
+        AtomicInteger angle = new AtomicInteger(0);
+        AtomicLong gyrointerval = new AtomicLong(0);
+        final long[] lastGyro = {System.currentTimeMillis()};
+        final long[] gyroIntervals = new long[20];
+        AtomicInteger gyroIndex = new AtomicInteger(0);
+        new Thread(() -> {
+            while (opModeIsActive()){
+                long now = System.currentTimeMillis();
+                gyroIntervals[gyroIndex.getAndIncrement()] = (now - lastGyro[0]);
+
+                if(gyroIndex.get() >= gyroIntervals.length){
+                    gyroIndex.set(0);
+                }
+
+                double avg = 0;
+                for(long l : gyroIntervals){
+                    avg += l;
+                }
+
+                gyrointerval.set((long) (avg / ((double)gyroIntervals.length)));
+
+                lastGyro[0] = now;
+                //angle.set((int) imu.getAngularOrientation().firstAngle);
+            }
+        });
+
+        boolean lastUp = false, lastDown = false;
+
+        int numCommands = 8;
 
         while(opModeIsActive()){
             motor2.setPower(power);
@@ -115,8 +137,6 @@ public class TestOpmode extends LinearOpMode {
 
             motor0.setPower(Math.random());
             motor1.setPower(Math.random());
-            motor2.setPower(Math.random());
-            motor3.setPower(Math.random());
             motor2.setPower(Math.random());
             motor3.setPower(Math.random());
 
@@ -146,6 +166,22 @@ public class TestOpmode extends LinearOpMode {
                 enabled = false;
                 PhotonCore.disable();
             }
+            if(gamepad1.x){
+                PhotonCore.experimental.setSinglethreadedOptimized(true);
+            }
+            if(gamepad1.y){
+                PhotonCore.experimental.setSinglethreadedOptimized(false);
+            }
+
+            if(gamepad1.dpad_up && !lastUp){
+                numCommands ++;
+            }
+            if(gamepad1.dpad_down && !lastDown){
+                numCommands --;
+            }
+
+            lastUp = gamepad1.dpad_up;
+            lastDown = gamepad1.dpad_down;
 
             telemetry.addData("Motor Power", power);
             telemetry.addData("Motor Position", motor2.getCurrentPosition());
@@ -153,11 +189,16 @@ public class TestOpmode extends LinearOpMode {
             telemetry.addData("Average Interval (ms)", avg);
             telemetry.addData("Run Frequency (hz)", 1.0/dt);
 
-            //telemetry.addData("2M Distance (mm)", vl53L0XEx.getDistance(DistanceUnit.MM));
+            telemetry.addData("2M Distance (mm)", distanceSensor.getDistance(DistanceUnit.MM));
             //telemetry.addData("Color Sensor V3", revColorSensorV3Ex.getDistance(DistanceUnit.MM));
             //telemetry.addData("MB1242", mb1242Ex.getDistanceAsync(DistanceUnit.MM));
-            telemetry.addData("Gyro", imu.getAngularOrientation().firstAngle);
+            angle.set((int) imu.getAngularOrientation().firstAngle);
+            telemetry.addData("Gyro", angle.get());
+            //telemetry.addData("Gyro Interval (ms)", gyrointerval.get());
 
+            PhotonCore.experimental.setMaximumParallelCommands(numCommands);
+
+            telemetry.addData("Parallel Commands", numCommands);
             telemetry.addLine("PhotonCore " + (enabled ? "ENABLED" : "DISABLED"));
             telemetry.update();
         }

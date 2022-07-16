@@ -7,7 +7,6 @@ import com.qualcomm.hardware.lynx.commands.LynxCommand;
 import com.qualcomm.hardware.lynx.commands.LynxMessage;
 import com.qualcomm.hardware.lynx.commands.LynxRespondable;
 import com.qualcomm.hardware.lynx.commands.standard.LynxAck;
-import com.qualcomm.robotcore.util.RobotLog;
 
 import java.util.ArrayList;
 import java.util.concurrent.ConcurrentHashMap;
@@ -39,15 +38,13 @@ public class PhotonLynxModule extends LynxModule {
                 ((LynxCommand) command).onResponseReceived(PhotonCore.getCacheResponse((LynxCommand)command));
                 return;
             }
-            if(PhotonCore.shouldAckImmediately((LynxCommand)command)){
+            if(PhotonCore.shouldParallelize((LynxCommand)command)){
                 boolean success = PhotonCore.registerSend((LynxCommand) command);
-                if(success){
-                    return;
-                }else {
+                if (!success) {
                     super.sendCommand(command);
-                    ((LynxCommand)command).onAckReceived(new LynxAck(command.getModule(), false));
-                    return;
+                    ((LynxCommand) command).onAckReceived(new LynxAck(command.getModule(), false));
                 }
+                return;
             }
         }
         super.sendCommand(command);
@@ -64,7 +61,7 @@ public class PhotonLynxModule extends LynxModule {
                 skippedAcquire.add(message);
                 return;
             }
-            if(PhotonCore.shouldAckImmediately((LynxCommand) message)){
+            if(PhotonCore.shouldParallelize((LynxCommand) message)){
                 skippedAcquire.add(message);
                 return;
             }
