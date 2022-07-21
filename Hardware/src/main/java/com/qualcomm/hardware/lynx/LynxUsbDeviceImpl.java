@@ -1086,7 +1086,9 @@ public class LynxUsbDeviceImpl extends ArmableUsbDevice implements LynxUsbDevice
                                 if (module != null)
                                     {
                                     module.onIncomingDatagramReceived(datagram);
-                                    }
+                                    }else{
+                                    RobotLog.e("No Module Found");
+                                }
                                 }
                             }
                         }

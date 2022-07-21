@@ -1,5 +1,7 @@
 package org.firstinspires.ftc.photoncore;
 
+import com.outoftheboxrobotics.photoncore.PhotonCore;
+import com.outoftheboxrobotics.photoncore.ReflectionUtils;
 import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.hardware.lynx.LynxUnsupportedCommandException;
 import com.qualcomm.hardware.lynx.LynxUsbDevice;
@@ -50,22 +52,17 @@ import static com.qualcomm.hardware.lynx.commands.core.LynxGetADCCommand.Channel
 public class LimitTesting extends LinearOpMode {
     @Override
     public void runOpMode() throws InterruptedException {
-        LynxModule module = hardwareMap.getAll(LynxModule.class).get(0);
+        LynxModule module = PhotonCore.EXPANSION_HUB;
 
         LynxUsbDeviceImpl usbDevice;
         RobotUsbDevice device = null;
         Object syncObject = new Object();
 
-        Method getNewNumber = null;
-
-        ConcurrentHashMap<Integer, LynxRespondable> unfinishedCommands = new ConcurrentHashMap<>();
         try {
-            Field f1 = module.getClass().getDeclaredField("lynxUsbDevice");
-            f1.setAccessible(true);
+            Field f1 = ReflectionUtils.getField(module.getClass(), "lynxUsbDevice");
             LynxUsbDevice tmp = (LynxUsbDevice) f1.get(module);
             if(tmp instanceof LynxUsbDeviceDelegate){
-                Field tmp2 = LynxUsbDeviceDelegate.class.getDeclaredField("delegate");
-                tmp2.setAccessible(true);
+                Field tmp2 = ReflectionUtils.getField(LynxUsbDeviceDelegate.class, "delegate");
                 usbDevice = (LynxUsbDeviceImpl) tmp2.get(tmp);
             }else{
                 usbDevice = (LynxUsbDeviceImpl) tmp;
@@ -76,14 +73,7 @@ public class LimitTesting extends LinearOpMode {
             Field f3 = usbDevice.getClass().getDeclaredField("engageLock");
             f3.setAccessible(true);
             syncObject = f3.get(usbDevice);
-
-            getNewNumber = module.getClass().getDeclaredMethod("getNewMessageNumber");
-            getNewNumber.setAccessible(true);
-
-            Field unfinishedField = module.getClass().getDeclaredField("unfinishedCommands");
-            unfinishedField.setAccessible(true);
-            unfinishedCommands = (ConcurrentHashMap<Integer, LynxRespondable>) unfinishedField.get(module);
-        } catch (IllegalAccessException | NoSuchFieldException | NoSuchMethodException e) {
+        } catch (IllegalAccessException | NoSuchFieldException e) {
             e.printStackTrace();
         }
 
@@ -166,21 +156,13 @@ public class LimitTesting extends LinearOpMode {
         ArrayList<Byte> byteArr = new ArrayList<>();
         ArrayList<byte[]> bytesArr = new ArrayList<>();
         for(LynxDekaInterfaceCommand command : commands){
-            try {
-                messageNum = (Byte) getNewNumber.invoke(module);
-            } catch (IllegalAccessException | InvocationTargetException e) {
-                e.printStackTrace();
-            }
+            messageNum = (Byte) messageNum;
 
             command.setMessageNumber(messageNum);
 
             try {
                 LynxDatagram datagram = new LynxDatagram(command);
                 command.setSerialization(datagram);
-
-                if(command.isAckable() || command.isResponseExpected()){
-                    unfinishedCommands.put(command.getMessageNumber(), (LynxRespondable)command);
-                }
 
                 datagram.setDestModuleAddress(datagram.getDestModuleAddress() + 1);
 

@@ -16,12 +16,14 @@ import com.qualcomm.hardware.rev.Rev2mDistanceSensor;
 import com.qualcomm.hardware.rev.RevColorSensorV3;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.exception.RobotCoreException;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorImplEx;
 import com.qualcomm.robotcore.hardware.I2cDeviceSynch;
 import com.qualcomm.robotcore.hardware.I2cDeviceSynchSimple;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.ServoImpl;
+import com.qualcomm.robotcore.util.RobotLog;
 
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 
@@ -44,29 +46,47 @@ public class Validation extends LinearOpMode {
         parameters.loggingTag          = "IMU";
         parameters.accelerationIntegrationAlgorithm = new JustLoggingAccelerationIntegrator();
 
-        imu.initialize(parameters);
+        //imu.initialize(parameters);
 
         Rev2mDistanceSensor distanceSensor = hardwareMap.get(Rev2mDistanceSensor.class, "sensor");
 
         RevColorSensorV3 distanceSensor2 = hardwareMap.get(RevColorSensorV3.class, "color");
 
-        MB1242Ex mb1242Ex = hardwareMap.get(MB1242Ex.class, "sonic");
+        //MB1242Ex mb1242Ex = hardwareMap.get(MB1242Ex.class, "sonic");
 
         boolean enabled = false;
 
-        LynxDcMotorController motorController = (LynxDcMotorController) hardwareMap.dcMotorController.iterator().next();
-        DcMotorEx motor0 = new DcMotorImplEx(motorController, 0);
-        DcMotorEx motor1 = new DcMotorImplEx(motorController, 1);
-        DcMotorEx motor2 = new DcMotorImplEx(motorController, 2);
-        DcMotorEx motor3 = new DcMotorImplEx(motorController, 3);
+        LynxDcMotorController motorController = null;
+        try {
+            motorController = new LynxDcMotorController(hardwareMap.appContext, PhotonCore.CONTROL_HUB);
+        } catch (RobotCoreException e) {
+            e.printStackTrace();
+        }
+        DcMotorEx motor0 = (DcMotorEx) hardwareMap.dcMotor.get("0");
+        DcMotorEx motor1 = (DcMotorEx) hardwareMap.dcMotor.get("1");
+        DcMotorEx motor2 = (DcMotorEx) hardwareMap.dcMotor.get("2");
+        DcMotorEx motor3 = (DcMotorEx) hardwareMap.dcMotor.get("3");
 
-        LynxServoController servoController = (LynxServoController) hardwareMap.servoController.iterator().next();
-        Servo servo0 = new ServoImpl(servoController, 0);
-        Servo servo1 = new ServoImpl(servoController, 1);
-        Servo servo2 = new ServoImpl(servoController, 2);
-        Servo servo3 = new ServoImpl(servoController, 3);
-        Servo servo4 = new ServoImpl(servoController, 4);
-        Servo servo5 = new ServoImpl(servoController, 5);
+        LynxDcMotorController motorController1 = null;
+        try {
+             motorController1 = new LynxDcMotorController(hardwareMap.appContext, PhotonCore.EXPANSION_HUB);
+        } catch (RobotCoreException e) {
+            e.printStackTrace();
+        }
+        DcMotorEx motor4 = (DcMotorEx) hardwareMap.dcMotor.get("4");
+
+        LynxServoController servoController = null;
+        try {
+            servoController = new LynxServoController(hardwareMap.appContext, PhotonCore.CONTROL_HUB);
+        } catch (RobotCoreException e) {
+            e.printStackTrace();
+        }
+        Servo servo0 = hardwareMap.servo.get("s0");
+        Servo servo1 = hardwareMap.servo.get("s1");
+        Servo servo2 = hardwareMap.servo.get("s2");
+        Servo servo3 = hardwareMap.servo.get("s3");
+        Servo servo4 = hardwareMap.servo.get("s4");
+        Servo servo5 = hardwareMap.servo.get("s5");
 
         LynxResetMotorEncoderCommand command = new LynxResetMotorEncoderCommand(PhotonCore.CONTROL_HUB, 2);
         try {
@@ -117,10 +137,11 @@ public class Validation extends LinearOpMode {
 
         boolean lastUp = false, lastDown = false;
 
-        int numCommands = 8;
+        int numCommands = 4;
 
         while(opModeIsActive()){
-            motor2.setPower(power);
+            long start = System.currentTimeMillis();
+            //motor2.setPower(power);
             long now = System.nanoTime();
             double dt = (now - last)/1.0e+9;
             last = now;
@@ -135,10 +156,13 @@ public class Validation extends LinearOpMode {
                 dir = 0.25;
             }
 
+            long timer1 = System.currentTimeMillis();
+
             motor0.setPower(Math.random());
             motor1.setPower(Math.random());
             motor2.setPower(Math.random());
             motor3.setPower(Math.random());
+            motor4.setPower(Math.random());
 
             servo0.setPosition(Math.random());
             servo1.setPosition(Math.random());
@@ -146,6 +170,8 @@ public class Validation extends LinearOpMode {
             servo3.setPosition(Math.random());
             servo4.setPosition(Math.random());
             servo5.setPosition(Math.random());
+
+            long timer2 = System.currentTimeMillis();
 
             loopTimes[index] = (dt * 1000.0);
             index ++;
@@ -157,6 +183,8 @@ public class Validation extends LinearOpMode {
             for(double d : loopTimes){
                 avg += d / loopTimes.length;
             }
+
+            long timer3 = System.currentTimeMillis();
 
             if(gamepad1.a){
                 enabled = true;
@@ -180,19 +208,23 @@ public class Validation extends LinearOpMode {
                 numCommands --;
             }
 
+            long timer4 = System.currentTimeMillis();
+
             lastUp = gamepad1.dpad_up;
             lastDown = gamepad1.dpad_down;
 
+            long timer5 = System.currentTimeMillis();
+
             telemetry.addData("Motor Power", power);
-            telemetry.addData("Motor Position", motor2.getCurrentPosition());
+            //telemetry.addData("Motor Position", motor2.getCurrentPosition());
             telemetry.addData("Interval (ms)", (dt * 1000.0));
             telemetry.addData("Average Interval (ms)", avg);
             telemetry.addData("Run Frequency (hz)", 1.0/dt);
 
-            telemetry.addData("2M Distance (mm)", distanceSensor.getDistance(DistanceUnit.MM));
+            //telemetry.addData("2M Distance (mm)", distanceSensor.getDistance(DistanceUnit.MM));
             //telemetry.addData("Color Sensor V3", revColorSensorV3Ex.getDistance(DistanceUnit.MM));
             //telemetry.addData("MB1242", mb1242Ex.getDistanceAsync(DistanceUnit.MM));
-            angle.set((int) imu.getAngularOrientation().firstAngle);
+            //angle.set((int) imu.getAngularOrientation().firstAngle);
             telemetry.addData("Gyro", angle.get());
             //telemetry.addData("Gyro Interval (ms)", gyrointerval.get());
 
@@ -200,6 +232,10 @@ public class Validation extends LinearOpMode {
 
             telemetry.addData("Parallel Commands", numCommands);
             telemetry.addLine("PhotonCore " + (enabled ? "ENABLED" : "DISABLED"));
+
+            long timer6 = System.currentTimeMillis();
+
+            //RobotLog.ii("Validation", (timer1 - start) + " | " + (timer2 - timer1) + " | " + (timer3 - timer2) + " | " + (timer4 - timer3) + " | " + (timer5 - timer4) + " | " + (timer6 - timer5));
             telemetry.update();
         }
     }
