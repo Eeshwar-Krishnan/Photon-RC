@@ -3,9 +3,11 @@ package com.outoftheboxrobotics.photoncore;
 import android.content.Context;
 
 
+import com.outoftheboxrobotics.photoncore.Neutrino.BNO055.BNO055ImuEx;
 import com.outoftheboxrobotics.photoncore.Neutrino.Rev2MSensor.Rev2mDistanceSensorEx;
 import com.outoftheboxrobotics.photoncore.Neutrino.RevColorSensor.RevColorSensorV3Ex;
 import com.qualcomm.ftccommon.FtcEventLoop;
+import com.qualcomm.hardware.bosch.BNO055IMU;
 import com.qualcomm.hardware.lynx.LynxI2cDeviceSynch;
 import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.hardware.lynx.LynxUnsupportedCommandException;
@@ -16,8 +18,13 @@ import com.qualcomm.hardware.lynx.commands.LynxCommand;
 import com.qualcomm.hardware.lynx.commands.LynxDatagram;
 import com.qualcomm.hardware.lynx.commands.LynxMessage;
 import com.qualcomm.hardware.lynx.commands.LynxRespondable;
+import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadMultipleBytesCommand;
+import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadSingleByteCommand;
 import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadStatusQueryCommand;
+import com.qualcomm.hardware.lynx.commands.core.LynxI2cWriteMultipleBytesCommand;
 import com.qualcomm.hardware.lynx.commands.core.LynxI2cWriteReadMultipleBytesCommand;
+import com.qualcomm.hardware.lynx.commands.core.LynxI2cWriteSingleByteCommand;
+import com.qualcomm.hardware.lynx.commands.core.LynxI2cWriteStatusQueryCommand;
 import com.qualcomm.hardware.lynx.commands.core.LynxSetMotorConstantPowerCommand;
 import com.qualcomm.hardware.lynx.commands.core.LynxSetServoPulseWidthCommand;
 import com.qualcomm.hardware.lynx.commands.standard.LynxAck;
@@ -45,6 +52,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -65,6 +73,9 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
 
     private OpModeManagerImpl opModeManager;
 
+    private ArrayList<LynxModule> toGyroCache;
+    private HashMap<LynxModule, Semaphore> bus0Locks;
+
     public static class ExperimentalParameters{
         private final AtomicBoolean singlethreadedOptimized = new AtomicBoolean(true);
         private final AtomicInteger maximumParallelCommands = new AtomicInteger(4);
@@ -74,7 +85,7 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
         }
 
         public boolean setMaximumParallelCommands(int maximumParallelCommands){
-            if(maximumParallelCommands > 9 || maximumParallelCommands <= 0){
+            if(maximumParallelCommands <= 0){
                 return false;
             }
             this.maximumParallelCommands.set(maximumParallelCommands);
@@ -90,16 +101,47 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
         enabled = new AtomicBoolean(false);
         threadEnabled = new AtomicBoolean(false);
         usbDeviceMap = new HashMap<>();
+        toGyroCache = new ArrayList<>();
+        bus0Locks = new HashMap<>();
     }
 
     public static void enable(){
         instance.enabled.set(true);
+        //Might as well turn on bulk caching for the user, no penalty for doing this
         if(CONTROL_HUB.getBulkCachingMode() == LynxModule.BulkCachingMode.OFF){
             CONTROL_HUB.setBulkCachingMode(LynxModule.BulkCachingMode.AUTO);
         }
         if(EXPANSION_HUB != null && EXPANSION_HUB.getBulkCachingMode() == LynxModule.BulkCachingMode.OFF){
             EXPANSION_HUB.setBulkCachingMode(LynxModule.BulkCachingMode.AUTO);
         }
+    }
+
+    private boolean enableGyroCache(LynxModule module){
+        if(module == null){
+            return false;//Most likely an unconnected hub, fail fast
+        }
+        if(toGyroCache.contains(module)){
+            return false; //Already being cached, ignore
+        }
+        toGyroCache.add(module);
+        bus0Locks.put(module, new Semaphore(1)); //Only one device can be accessed per bus according to REV
+        return true;
+    }
+
+    private int getI2CPort(LynxCommand command){
+        if(command instanceof LynxI2cWriteSingleByteCommand ||
+                command instanceof LynxI2cWriteMultipleBytesCommand ||
+                command instanceof LynxI2cReadSingleByteCommand ||
+                command instanceof LynxI2cReadMultipleBytesCommand ||
+                command instanceof LynxI2cReadStatusQueryCommand ||
+                command instanceof LynxI2cWriteStatusQueryCommand){
+            try {
+                return (int) ReflectionUtils.getField(command.getClass(), "i2cBus").get(command);//All these commands share the same variable name for the i2c bus, very convenient for reflection
+            } catch (IllegalAccessException e) {
+                e.printStackTrace();
+            }
+        }
+        return -1;//Not an i2c command, ignore
     }
 
     public static void disable(){
@@ -112,17 +154,33 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
         instance.opModeManager = eventLoop.getOpModeManager();
     }
 
+    public static boolean aquireBus0Lock(LynxModule module) throws InterruptedException {
+        if(!instance.bus0Locks.containsKey(module)){
+            return false;
+        }
+        instance.bus0Locks.get(module).acquire();
+        return true;
+    }
+
+    public static boolean releaseBus0Lock(LynxModule module) throws InterruptedException {
+        if(!instance.bus0Locks.containsKey(module)){
+            return false;
+        }
+        instance.bus0Locks.get(module).release();
+        return true;
+    }
+
     protected static boolean registerSend(LynxCommand command) throws LynxUnsupportedCommandException, InterruptedException {
 
         PhotonLynxModule photonModule = (PhotonLynxModule) command.getModule();
 
         if(!instance.usbDeviceMap.containsKey(photonModule)){
-            return false;
+            return false;//RS485 hub, can't parallelize, get out of dodge to avoid adding extra overhead
         }
 
         synchronized (instance.messageSync) {
             while (((PhotonLynxModule)photonModule).getUnfinishedCommands().size() > experimental.maximumParallelCommands.get()){
-                //RobotLog.ee("PhotonCore", ((PhotonLynxModule)CONTROL_HUB).getUnfinishedCommands().size() + " | " + ((PhotonLynxModule)EXPANSION_HUB).getUnfinishedCommands().size());
+                //We can only parallelize so many commands before the hub runs out of memory space, usually around 7 or 8 commands
             }
 
             if(!experimental.singlethreadedOptimized.get()) {
@@ -131,7 +189,7 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
                     noSimilar = true;
                     for (LynxRespondable respondable : photonModule.getUnfinishedCommands().values()) {
                         if (instance.isSimilar(respondable, command)) {
-                            noSimilar = false;
+                            noSimilar = false;//Don't allow similar commands, this allows threads to have somewhat equal priorities when using the send system
                         }
                     }
                 }
@@ -161,7 +219,7 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
                 //RobotLog.ii("PhotonCore", "Wrote " + bytes.length + " bytes " + photonModule.getUnfinishedCommands().size() + " | " + (msLatency));
 
                 if (shouldAckImmediately(command)) {
-                    command.onAckReceived(new LynxAck(photonModule, false));
+                    command.onAckReceived(new LynxAck(photonModule, false));//Ack immediately because we really don't need to wait for an ack for this command
                 }
             } catch (LynxUnsupportedCommandException | RobotUsbException e) {
                 e.printStackTrace();
@@ -173,12 +231,12 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
 
     protected static boolean shouldParallelize(LynxCommand command){
         return (command instanceof LynxSetMotorConstantPowerCommand) ||
-                (command instanceof LynxSetServoPulseWidthCommand);
+                (command instanceof LynxSetServoPulseWidthCommand);//Only two tested commands at the moment, more could theoretically be added
     }
 
     protected static boolean shouldAckImmediately(LynxCommand command){
         return (command instanceof LynxSetMotorConstantPowerCommand) ||
-                (command instanceof LynxSetServoPulseWidthCommand);
+                (command instanceof LynxSetServoPulseWidthCommand);//Basically no side effects from ignoring the response with modern comms, nacks are very very rare
     }
 
     private boolean isSimilar(LynxRespondable respondable1, LynxRespondable respondable2){
@@ -187,13 +245,13 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
     }
 
     protected static LynxMessage getCacheResponse(LynxCommand command){
-        return null;
+        return null;//Legacy, ignored
     }
 
     @Override
     public void run() {
         while(threadEnabled.get()){
-
+            //Legacy, ignored
             try {
                 Thread.sleep(5);
             } catch (InterruptedException e) {
@@ -205,13 +263,13 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
     @Override
     public void onOpModePreInit(OpMode opMode) {
         if(opModeManager.getActiveOpModeName().equals(OpModeManager.DEFAULT_OP_MODE_NAME)){
-            return;
+            return; //Don't waste time setting up photon when the opmode is stopped
         }
 
         HardwareMap map = opMode.hardwareMap;
 
-        CONTROL_HUB = null;
-        EXPANSION_HUB = null;
+        toGyroCache.clear();
+        bus0Locks.clear();
 
         boolean replacedPrev = false;
         boolean hasChub = false;
@@ -223,7 +281,7 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
                 hasChub = true;
             }
         }
-        if(replacedPrev){
+        if(replacedPrev){//Seems this has already been run and there are already photonlynxmodule objects, we need to remove the new lynxmodule objects made by the sdk
             HashMap<String, HardwareDevice> toRemove = new HashMap<>();
             for(LynxModule module : map.getAll(LynxModule.class)){
                 if(!(module instanceof PhotonLynxModule)){
@@ -233,6 +291,9 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
             for(String s : toRemove.keySet()){
                 map.remove(s, toRemove.get(s));
             }
+        }else{
+            CONTROL_HUB = null;
+            EXPANSION_HUB = null;
         }
 
         instance.modules = map.getAll(LynxModule.class);
@@ -343,15 +404,13 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
                         }
                         setLynxObject(device2, replacements);
                         RobotLog.e("" + (device2 instanceof LynxI2cDeviceSynch));
-                    } catch (IllegalAccessException e) {
-                        e.printStackTrace();
+                    } catch (Exception ignored) {
                     }
                 }else if (device instanceof I2cDeviceSynchSimple){
                     try {
                         I2cDeviceSynchSimple device2 = (I2cDeviceSynchSimple) ReflectionUtils.getField(device.getClass(), "deviceClient").get(device);
                         setLynxObject(device2, replacements);
-                    } catch (IllegalAccessException e) {
-                        e.printStackTrace();
+                    } catch (Exception ignored) {
                     }
                 }else {
                     setLynxObject(device, replacements);
@@ -373,6 +432,17 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
                         I2cDeviceSynchSimple tmp = (I2cDeviceSynchSimple) ReflectionUtils.getField(device.getClass(), "deviceClient").get(device);
                         revColorSensorV3Ex = new RevColorSensorV3Ex(tmp);
                         replacedNeutrino.put((String) map.getNamesOf(device).toArray()[0], revColorSensorV3Ex);
+                        removedNeutrino.put((String) map.getNamesOf(device).toArray()[0], device);
+                    } catch (IllegalAccessException e) {
+                        e.printStackTrace();
+                    }
+                }
+                if(device instanceof BNO055IMU){
+                    BNO055ImuEx bno055ImuEx;
+                    try {
+                        I2cDeviceSynch tmp = (I2cDeviceSynch) ReflectionUtils.getField(device.getClass(), "deviceClient").get(device);
+                        bno055ImuEx = new BNO055ImuEx(tmp);
+                        replacedNeutrino.put((String) map.getNamesOf(device).toArray()[0], bno055ImuEx);
                         removedNeutrino.put((String) map.getNamesOf(device).toArray()[0], device);
                     } catch (IllegalAccessException e) {
                         e.printStackTrace();
