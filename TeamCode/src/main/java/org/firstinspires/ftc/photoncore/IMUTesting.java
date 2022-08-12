@@ -1,5 +1,6 @@
 package org.firstinspires.ftc.photoncore;
 
+import com.outoftheboxrobotics.photoncore.Neutrino.BNO055.BNO055ImuEx;
 import com.outoftheboxrobotics.photoncore.PhotonCore;
 import com.qualcomm.hardware.bosch.BNO055IMU;
 import com.qualcomm.hardware.bosch.JustLoggingAccelerationIntegrator;
@@ -30,16 +31,26 @@ public class IMUTesting extends LinearOpMode {
             RobotLog.ii("IMU Tester 1", ""+imu.getAngularOrientation().firstAngle);
         }
         long dt = System.currentTimeMillis() - start;
-        PhotonCore.enable();
+        ((BNO055ImuEx) imu).enableGyroCaching();
         long start2 = System.currentTimeMillis();
         for(int i = 0; i < 500; i ++){
             RobotLog.ii("IMU Tester 2", ""+imu.getAngularOrientation().firstAngle);
         }
         long dt2 = System.currentTimeMillis() - start2;
 
+        telemetry.setMsTransmissionInterval(15);
+        long now = System.nanoTime();
+        double dt3 = 1;
         while (!isStarted()){
             telemetry.addData("Average Time Stock", ((dt) / 500.0) + " ms");
             telemetry.addData("Average Time Photon", ((dt2) / 500.0) + " ms");
+            telemetry.addData("IMU angle", imu.getAngularOrientation().firstAngle);
+            long read = imu.getAngularOrientation().acquisitionTime;
+            if(read != now) {
+                dt3 = (read - now) / 1.0E9;
+                now = read;
+            }
+            telemetry.addData("Update Rate (HZ)", 1.0/dt3);
             telemetry.update();
         }
 

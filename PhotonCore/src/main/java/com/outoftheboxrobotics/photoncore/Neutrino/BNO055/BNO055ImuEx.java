@@ -1,23 +1,26 @@
 package com.outoftheboxrobotics.photoncore.Neutrino.BNO055;
 
+import android.content.Context;
+
 import com.outoftheboxrobotics.photoncore.PhotonCore;
 import com.outoftheboxrobotics.photoncore.PhotonLynxModule;
 import com.outoftheboxrobotics.photoncore.ReflectionUtils;
-import com.qualcomm.hardware.bosch.BNO055IMU;
+import com.qualcomm.ftccommon.FtcEventLoop;
 import com.qualcomm.hardware.bosch.BNO055IMUImpl;
 import com.qualcomm.hardware.lynx.LynxI2cDeviceSynch;
 import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.hardware.lynx.LynxNackException;
-import com.qualcomm.hardware.lynx.Supplier;
-import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadMultipleBytesCommand;
 import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadStatusQueryCommand;
+import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadStatusQueryResponse;
 import com.qualcomm.hardware.lynx.commands.core.LynxI2cWriteReadMultipleBytesCommand;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
-import com.qualcomm.robotcore.exception.RobotCoreException;
+import com.qualcomm.robotcore.eventloop.opmode.OpModeManager;
 import com.qualcomm.robotcore.hardware.I2cAddr;
 import com.qualcomm.robotcore.hardware.I2cDeviceSynch;
 import com.qualcomm.robotcore.hardware.I2cDeviceSynchImplOnSimple;
+import com.qualcomm.robotcore.util.RobotLog;
 
+import org.firstinspires.ftc.ftccommon.external.OnCreateEventLoop;
 import org.firstinspires.ftc.robotcore.external.navigation.Acceleration;
 import org.firstinspires.ftc.robotcore.external.navigation.AngularVelocity;
 import org.firstinspires.ftc.robotcore.external.navigation.AxesOrder;
@@ -26,6 +29,7 @@ import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.MagneticFlux;
 import org.firstinspires.ftc.robotcore.external.navigation.Orientation;
 import org.firstinspires.ftc.robotcore.external.navigation.Quaternion;
+import org.firstinspires.ftc.robotcore.internal.opmode.OpModeManagerImpl;
 
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
@@ -33,25 +37,28 @@ import java.nio.ByteOrder;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * ACCELEROMETER   (Register.ACC_DATA_X_LSB), 0-3
- *             MAGNETOMETER    (Register.MAG_DATA_X_LSB), 4-6
- *             GYROSCOPE       (Register.GYR_DATA_X_LSB), 7-9
- *             EULER           (Register.EUL_H_LSB), 10-12
- *             QUATERNION                            13-16
- *             LINEARACCEL     (Register.LIA_DATA_X_LSB), 17-19
- *             GRAVITY         (Register.GRV_DATA_X_LSB); 20-22
+ * ACCELEROMETER   (Register.ACC_DATA_X_LSB), 0-2
+ *             MAGNETOMETER    (Register.MAG_DATA_X_LSB), 3-5
+ *             GYROSCOPE       (Register.GYR_DATA_X_LSB), 6-8
+ *             EULER           (Register.EUL_H_LSB), 9-11
+ *             QUATERNION                            12-15
+ *             LINEARACCEL     (Register.LIA_DATA_X_LSB), 16-18
+ *             GRAVITY         (Register.GRV_DATA_X_LSB); 19-21
  */
 
 public class BNO055ImuEx extends BNO055IMUImpl implements Runnable{
+    private static FtcEventLoop eventLoopManager;
+    private static OpModeManagerImpl opModeManager;
+
     private LynxModule module;
     private int bus;
     private I2cAddr address;
 
     private final Object cache;
-    private short[] cachedData;
+    private volatile short[] cachedData;
     private long nanoTime;
 
-    private boolean stockCompatibilityMode;
+    private volatile boolean stockCompatibilityMode;
     private AtomicBoolean opmodeRunning;
 
     /**
@@ -62,19 +69,25 @@ public class BNO055ImuEx extends BNO055IMUImpl implements Runnable{
     public BNO055ImuEx(I2cDeviceSynch deviceClient) {
         super(deviceClient);
         setupVariables(deviceClient);
-        stockCompatibilityMode = false;
+        stockCompatibilityMode = true;
         cache = new Object();
-        cachedData = new short[22];
+        cachedData = new short[30];
         opmodeRunning = new AtomicBoolean(false);
+
+        opModeManager.registerListener(this);
     }
 
     public void enableGyroCaching(){
-        if(bus == 0 && module instanceof PhotonLynxModule)
-            stockCompatibilityMode = true;
+        if(bus == 0 && module instanceof PhotonLynxModule) {
+            stockCompatibilityMode = false;
+            RobotLog.e("============ENABLED============");
+        }else{
+            RobotLog.e("============FAILED TO ENABLE============");
+        }
     }
 
     public void disableGyroCaching(){
-        stockCompatibilityMode = false;
+        stockCompatibilityMode = true;
     }
 
     @Override
@@ -94,9 +107,9 @@ public class BNO055ImuEx extends BNO055IMUImpl implements Runnable{
         }
         throwIfNotInitialized();
         synchronized (cache) {
-            float zRotationRate = -cachedData[6] / getAngularScale();
-            float yRotationRate = cachedData[7] / getAngularScale();
-            float xRotationRate = cachedData[8] / getAngularScale();
+            float zRotationRate = -cachedData[5] / getAngularScale();
+            float yRotationRate = cachedData[6] / getAngularScale();
+            float xRotationRate = cachedData[7] / getAngularScale();
             return new AngularVelocity(parameters.angleUnit.toAngleUnit(),
                     xRotationRate, yRotationRate, zRotationRate,
                     nanoTime)
@@ -112,7 +125,7 @@ public class BNO055ImuEx extends BNO055IMUImpl implements Runnable{
         }
         throwIfNotInitialized();
         synchronized (cache) {
-            return new MagneticFlux(cachedData[4] / getFluxScale(), cachedData[5] / getFluxScale(), cachedData[6] / getFluxScale(), nanoTime);
+            return new MagneticFlux(cachedData[3] / getFluxScale(), cachedData[4] / getFluxScale(), cachedData[5] / getFluxScale(), nanoTime);
         }
     }
 
@@ -134,7 +147,7 @@ public class BNO055ImuEx extends BNO055IMUImpl implements Runnable{
             return super.getLinearAcceleration();
         }
         synchronized (cache) {
-            return new Acceleration(DistanceUnit.METER, cachedData[17] / getMetersAccelerationScale(), cachedData[18] / getMetersAccelerationScale(), cachedData[19] / getMetersAccelerationScale(), nanoTime);
+            return new Acceleration(DistanceUnit.METER, cachedData[16] / getMetersAccelerationScale(), cachedData[17] / getMetersAccelerationScale(), cachedData[18] / getMetersAccelerationScale(), nanoTime);
         }
     }
 
@@ -144,7 +157,7 @@ public class BNO055ImuEx extends BNO055IMUImpl implements Runnable{
         if(stockCompatibilityMode){
             return super.getGravity();
         }
-        return new Acceleration(DistanceUnit.METER, cachedData[20] / getMetersAccelerationScale(), cachedData[21] / getMetersAccelerationScale(), cachedData[22] / getMetersAccelerationScale(), nanoTime);
+        return new Acceleration(DistanceUnit.METER, cachedData[19] / getMetersAccelerationScale(), cachedData[20] / getMetersAccelerationScale(), cachedData[21] / getMetersAccelerationScale(), nanoTime);
     }
 
     @Override
@@ -165,9 +178,9 @@ public class BNO055ImuEx extends BNO055IMUImpl implements Runnable{
         }
         org.firstinspires.ftc.robotcore.external.navigation.AngleUnit angleUnit = parameters.angleUnit.toAngleUnit();
         return new Orientation(AxesReference.INTRINSIC, AxesOrder.ZYX, angleUnit,
-                angleUnit.normalize(-cachedData[10] / getAngularScale()),
+                angleUnit.normalize(-cachedData[9] / getAngularScale()),
+                angleUnit.normalize(cachedData[10] / getAngularScale()),
                 angleUnit.normalize(cachedData[11] / getAngularScale()),
-                angleUnit.normalize(cachedData[12] / getAngularScale()),
                 nanoTime);
     }
 
@@ -177,7 +190,7 @@ public class BNO055ImuEx extends BNO055IMUImpl implements Runnable{
             return super.getQuaternionOrientation();
         }
         float scale = (1 << 14);
-        return new Quaternion(cachedData[13] / scale, cachedData[14] / scale, cachedData[15] / scale, cachedData[16] / scale, nanoTime);
+        return new Quaternion(cachedData[12] / scale, cachedData[13] / scale, cachedData[14] / scale, cachedData[15] / scale, nanoTime);
     }
 
     @Override
@@ -206,10 +219,10 @@ public class BNO055ImuEx extends BNO055IMUImpl implements Runnable{
                 while (!responseRecieved) {
                     LynxI2cReadStatusQueryCommand command1 = new LynxI2cReadStatusQueryCommand(module, bus, 44);
                     try {
-                        command1.sendReceive();
+                        LynxI2cReadStatusQueryResponse response = command1.sendReceive();
                         responseRecieved = true;
                         synchronized (cache) {
-                            cachedData = ByteBuffer.wrap(command1.toPayloadByteArray()).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().array();
+                            ByteBuffer.wrap(response.getBytes()).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(cachedData, 0, response.getBytes().length/2);
                             nanoTime = System.nanoTime();
                         }
                     } catch (InterruptedException e) {
@@ -243,7 +256,7 @@ public class BNO055ImuEx extends BNO055IMUImpl implements Runnable{
             field.setAccessible(true);
             device = (LynxI2cDeviceSynch) field.get(simple);
             //Lets also bump up the bus speed while we are here
-            //Tbh it doesn't affect anything when just reading 2 bytes but why not
+            //It should make a small difference at 44 bytes read
             device.setBusSpeed(LynxI2cDeviceSynch.BusSpeed.FAST_400K);
         } catch (IllegalAccessException e) {
             e.printStackTrace();
@@ -271,14 +284,27 @@ public class BNO055ImuEx extends BNO055IMUImpl implements Runnable{
         this.address = I2cAddr.create7bit(0x70);
     }
 
+    @OnCreateEventLoop
+    public static void attachEventLoop(Context context, FtcEventLoop eventLoop) {
+        eventLoopManager = eventLoop;
+        opModeManager = eventLoop.getOpModeManager();
+    }
+
     @Override
     public void onOpModePreInit(OpMode opMode) {
-        this.opmodeRunning = new AtomicBoolean(true);
+        if(opModeManager.getActiveOpModeName().equals(OpModeManager.DEFAULT_OP_MODE_NAME)){
+            return; //Don't waste time setting up photon when the opmode is stopped
+        }
+        this.opmodeRunning.set(true);
         new Thread(this).start();
     }
 
     @Override
     public void onOpModePostStop(OpMode opMode) {
-        this.opmodeRunning = new AtomicBoolean(false);
+        if(opModeManager.getActiveOpModeName().equals(OpModeManager.DEFAULT_OP_MODE_NAME)){
+            return; //Don't waste time setting up photon when the opmode is stopped
+        }
+        this.opmodeRunning.set(false);
+        stockCompatibilityMode = true;
     }
 }
