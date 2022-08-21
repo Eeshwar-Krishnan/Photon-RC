@@ -1,6 +1,5 @@
 package org.firstinspires.ftc.photoncore;
 
-import com.outoftheboxrobotics.photoncore.Neutrino.BNO055.BNO055ImuEx;
 import com.outoftheboxrobotics.photoncore.Neutrino.Rev2MSensor.Rev2mDistanceSensorEx;
 import com.outoftheboxrobotics.photoncore.Neutrino.RevColorSensor.RevColorSensorV3Ex;
 import com.outoftheboxrobotics.photoncore.PhotonCore;
@@ -145,12 +144,6 @@ public class SingleHubValidation extends LinearOpMode {
             if(gamepad1.b){
                 enabled = false;
                 PhotonCore.disable();
-            }
-            if(gamepad1.x){
-                ((BNO055ImuEx)imu).enableGyroCaching();
-            }
-            if(gamepad1.y){
-                ((BNO055ImuEx)imu).disableGyroCaching();
             }
 
             if(gamepad1.dpad_up && !lastUp){

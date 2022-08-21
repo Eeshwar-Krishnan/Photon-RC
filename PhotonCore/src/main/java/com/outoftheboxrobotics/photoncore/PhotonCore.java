@@ -2,12 +2,9 @@ package com.outoftheboxrobotics.photoncore;
 
 import android.content.Context;
 
-
-import com.outoftheboxrobotics.photoncore.Neutrino.BNO055.BNO055ImuEx;
 import com.outoftheboxrobotics.photoncore.Neutrino.Rev2MSensor.Rev2mDistanceSensorEx;
 import com.outoftheboxrobotics.photoncore.Neutrino.RevColorSensor.RevColorSensorV3Ex;
 import com.qualcomm.ftccommon.FtcEventLoop;
-import com.qualcomm.hardware.bosch.BNO055IMU;
 import com.qualcomm.hardware.lynx.LynxI2cDeviceSynch;
 import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.hardware.lynx.LynxUnsupportedCommandException;
@@ -18,13 +15,9 @@ import com.qualcomm.hardware.lynx.commands.LynxCommand;
 import com.qualcomm.hardware.lynx.commands.LynxDatagram;
 import com.qualcomm.hardware.lynx.commands.LynxMessage;
 import com.qualcomm.hardware.lynx.commands.LynxRespondable;
-import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadMultipleBytesCommand;
-import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadSingleByteCommand;
 import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadStatusQueryCommand;
-import com.qualcomm.hardware.lynx.commands.core.LynxI2cWriteMultipleBytesCommand;
+import com.qualcomm.hardware.lynx.commands.core.LynxI2cReadStatusQueryResponse;
 import com.qualcomm.hardware.lynx.commands.core.LynxI2cWriteReadMultipleBytesCommand;
-import com.qualcomm.hardware.lynx.commands.core.LynxI2cWriteSingleByteCommand;
-import com.qualcomm.hardware.lynx.commands.core.LynxI2cWriteStatusQueryCommand;
 import com.qualcomm.hardware.lynx.commands.core.LynxSetMotorConstantPowerCommand;
 import com.qualcomm.hardware.lynx.commands.core.LynxSetServoPulseWidthCommand;
 import com.qualcomm.hardware.lynx.commands.standard.LynxAck;
@@ -36,6 +29,7 @@ import com.qualcomm.robotcore.eventloop.opmode.OpModeManagerNotifier;
 import com.qualcomm.robotcore.exception.RobotCoreException;
 import com.qualcomm.robotcore.hardware.HardwareDevice;
 import com.qualcomm.robotcore.hardware.HardwareMap;
+import com.qualcomm.robotcore.hardware.I2cAddr;
 import com.qualcomm.robotcore.hardware.I2cDeviceSynch;
 import com.qualcomm.robotcore.hardware.I2cDeviceSynchDevice;
 import com.qualcomm.robotcore.hardware.I2cDeviceSynchSimple;
@@ -44,10 +38,12 @@ import com.qualcomm.robotcore.hardware.usb.RobotUsbDevice;
 import com.qualcomm.robotcore.util.RobotLog;
 
 import org.firstinspires.ftc.ftccommon.external.OnCreateEventLoop;
+import org.firstinspires.ftc.robotcore.internal.hardware.TimeWindow;
 import org.firstinspires.ftc.robotcore.internal.opmode.OpModeManagerImpl;
 import org.firstinspires.ftc.robotcore.internal.usb.exception.RobotUsbException;
 
 import java.lang.reflect.Field;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -56,6 +52,21 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * Listen
+ * I know why you are looking at this class
+ * you want to know how it works
+ * all i'm saying is
+ * i don't know how this class works
+ * I'm low key surprised it works as well as it did
+ * its a mess
+ * just give up tbh and dm me on discord i'll give you the tl;dr
+ *
+ * Also, if you do read this and fully understand it
+ * and somewhat feel the urge to open a PR
+ * take this https://genderdysphoria.fyi/
+ * you are going to need it (/half joking)
+ */
 public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications {
     protected static final PhotonCore instance = new PhotonCore();
     protected AtomicBoolean enabled, threadEnabled;
@@ -73,12 +84,14 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
 
     private OpModeManagerImpl opModeManager;
 
-    private ArrayList<LynxModule> toGyroCache;
-    private HashMap<LynxModule, Semaphore> bus0Locks;
+    private HashMap<LynxModule, Semaphore[]> busLocks;
+    private final HashMap<LynxModule, ArrayList<I2CReadCache>> onetimeReads;
 
     public static class ExperimentalParameters{
         private final AtomicBoolean singlethreadedOptimized = new AtomicBoolean(true);
         private final AtomicInteger maximumParallelCommands = new AtomicInteger(4);
+
+        private HashMap<LynxModule, ArrayList<I2CReadCache>> caches = new HashMap<>();
 
         public void setSinglethreadedOptimized(boolean state){
             this.singlethreadedOptimized.set(state);
@@ -91,9 +104,33 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
             this.maximumParallelCommands.set(maximumParallelCommands);
             return true;
         }
+
+        public void addI2cCache(LynxModule module, I2CReadCache i2cCache0) {
+            if(!caches.containsKey(module) && instance.usbDeviceMap.containsKey(module))
+                caches.put(module, new ArrayList<>());
+            this.caches.get(module).add(i2cCache0);
+        }
     }
 
-    public static ExperimentalParameters experimental = new ExperimentalParameters();
+    public static class I2CReadCache{
+        private final int bus;
+        private final I2cAddr i2cAddr;
+        private final int startAddr, numRegisters;
+
+        private volatile byte[] byteArr;
+        private AtomicBoolean dataWritten;
+
+        public I2CReadCache(int bus, I2cAddr i2cAddr, int startAddr, int numRegisters){
+            this.bus = bus;
+            this.i2cAddr = i2cAddr;
+            this.startAddr = startAddr;
+            this.numRegisters = numRegisters;
+            byteArr = new byte[numRegisters];
+            dataWritten = new AtomicBoolean(false);
+        }
+    }
+
+    public static final ExperimentalParameters experimental = new ExperimentalParameters();
 
     public PhotonCore(){
         CONTROL_HUB = null;
@@ -101,8 +138,8 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
         enabled = new AtomicBoolean(false);
         threadEnabled = new AtomicBoolean(false);
         usbDeviceMap = new HashMap<>();
-        toGyroCache = new ArrayList<>();
-        bus0Locks = new HashMap<>();
+        busLocks = new HashMap<>();
+        onetimeReads = new HashMap<>();
     }
 
     public static void enable(){
@@ -116,32 +153,53 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
         }
     }
 
-    private boolean enableGyroCache(LynxModule module){
-        if(module == null){
-            return false;//Most likely an unconnected hub, fail fast
+    protected boolean handleI2CReadCommand(LynxCommand command){
+        if(!usbDeviceMap.containsKey(command.getModule())){
+            return false;
         }
-        if(toGyroCache.contains(module)){
-            return false; //Already being cached, ignore
+        //We make the assumption here that the user is running exh fw version 1.8.2 or later, as is required via GM1 to be legal for competition
+        if(command instanceof LynxI2cWriteReadMultipleBytesCommand){
+            byte[] payloadArr = command.toPayloadByteArray();
+            I2CReadCache cache = new I2CReadCache(payloadArr[0], I2cAddr.create7bit(payloadArr[1]), payloadArr[3], payloadArr[2]);
+            synchronized (experimental) {
+                if(experimental.caches.containsKey(command.getModule())) {
+                    for (I2CReadCache cache1 : experimental.caches.get(command.getModule())) {
+                        if(cache1.bus == cache.bus && cache1.i2cAddr.get7Bit() != cache.i2cAddr.get7Bit()){
+                            RobotLog.clearGlobalErrorMsg();
+                            RobotLog.setGlobalErrorMsg("Cannot use I2C Caching with two devices on the same bus! Move one sensor to another port");
+                            throw new PhotonUnsupportedException("Cannot use I2C Caching with two devices on the same bus! Move one sensor to another port");
+                        }
+                        if (cache1.bus == cache.bus && cache1.i2cAddr.get7Bit() == cache.i2cAddr.get7Bit() && cache1.startAddr <= cache.startAddr && cache1.numRegisters >= cache.numRegisters && cache1.byteArr != null) {
+                            byte[] dataArr = new byte[cache.numRegisters];
+                            System.arraycopy(cache1.byteArr, (cache.startAddr - cache1.startAddr), dataArr, 0, cache.numRegisters);
+                            cache.byteArr = dataArr;
+                            cache.dataWritten.set(true);
+                            break;
+                        }
+                    }
+                }
+            }
+            synchronized (onetimeReads) {
+                if(!onetimeReads.containsKey(command.getModule()))
+                    onetimeReads.put((LynxModule) command.getModule(), new ArrayList<>());
+                onetimeReads.get(command.getModule()).add(cache);
+            }
+            command.onAckReceived(new LynxAck(command.getModule()));
+            return true;
         }
-        toGyroCache.add(module);
-        bus0Locks.put(module, new Semaphore(1)); //Only one device can be accessed per bus according to REV
-        return true;
+        return false;
     }
 
-    private int getI2CPort(LynxCommand command){
-        if(command instanceof LynxI2cWriteSingleByteCommand ||
-                command instanceof LynxI2cWriteMultipleBytesCommand ||
-                command instanceof LynxI2cReadSingleByteCommand ||
-                command instanceof LynxI2cReadMultipleBytesCommand ||
-                command instanceof LynxI2cReadStatusQueryCommand ||
-                command instanceof LynxI2cWriteStatusQueryCommand){
+    protected int getI2CPort(LynxCommand command){
+        if(command instanceof LynxI2cWriteReadMultipleBytesCommand ||
+                command instanceof LynxI2cReadStatusQueryCommand){
             try {
-                return (int) ReflectionUtils.getField(command.getClass(), "i2cBus").get(command);//All these commands share the same variable name for the i2c bus, very convenient for reflection
+                return ((Byte) ReflectionUtils.getField(command.getClass(), "i2cBus").get(command)).intValue();//All these commands share the same variable name for the i2c bus, very convenient for reflection
             } catch (IllegalAccessException e) {
                 e.printStackTrace();
             }
         }
-        return -1;//Not an i2c command, ignore
+        return -1; //Not an i2c command, ignore
     }
 
     public static void disable(){
@@ -152,22 +210,6 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
     public static void attachEventLoop(Context context, FtcEventLoop eventLoop) {
         eventLoop.getOpModeManager().registerListener(instance);
         instance.opModeManager = eventLoop.getOpModeManager();
-    }
-
-    public static boolean aquireBus0Lock(LynxModule module) throws InterruptedException {
-        if(!instance.bus0Locks.containsKey(module)){
-            return false;
-        }
-        instance.bus0Locks.get(module).acquire();
-        return true;
-    }
-
-    public static boolean releaseBus0Lock(LynxModule module) throws InterruptedException {
-        if(!instance.bus0Locks.containsKey(module)){
-            return false;
-        }
-        instance.bus0Locks.get(module).release();
-        return true;
     }
 
     protected static boolean registerSend(LynxCommand command) throws LynxUnsupportedCommandException, InterruptedException {
@@ -231,12 +273,14 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
 
     protected static boolean shouldParallelize(LynxCommand command){
         return (command instanceof LynxSetMotorConstantPowerCommand) ||
-                (command instanceof LynxSetServoPulseWidthCommand);//Only two tested commands at the moment, more could theoretically be added
+                (command instanceof LynxSetServoPulseWidthCommand) ||
+                (command instanceof LynxI2cWriteReadMultipleBytesCommand);//Only two tested commands at the moment, more could theoretically be added
     }
 
     protected static boolean shouldAckImmediately(LynxCommand command){
         return (command instanceof LynxSetMotorConstantPowerCommand) ||
-                (command instanceof LynxSetServoPulseWidthCommand);//Basically no side effects from ignoring the response with modern comms, nacks are very very rare
+                (command instanceof LynxSetServoPulseWidthCommand) ||
+                (command instanceof LynxI2cWriteReadMultipleBytesCommand);//Basically no side effects from ignoring the response with modern comms, nacks are very very rare
     }
 
     private boolean isSimilar(LynxRespondable respondable1, LynxRespondable respondable2){
@@ -245,17 +289,131 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
     }
 
     protected static LynxMessage getCacheResponse(LynxCommand command){
-        return null;//Legacy, ignored
+        LynxMessage toReturn = null;
+        if(!instance.usbDeviceMap.containsKey(command.getModule()))
+            return null;
+        if(instance.getI2CPort(command) != -1){
+            if(command instanceof LynxI2cReadStatusQueryCommand){
+                I2CReadCache toRemove = null;
+                for (I2CReadCache cache : instance.onetimeReads.get(command.getModule())) {
+                    if (cache.bus == command.toPayloadByteArray()[0]) {
+                        while (!cache.dataWritten.get()) ;
+                        ByteBuffer buffer = ByteBuffer.allocate(2 + cache.byteArr.length).order(LynxDatagram.LYNX_ENDIAN);
+                        buffer.put((byte) 0);
+                        buffer.put((byte) cache.byteArr.length);
+                        buffer.put(cache.byteArr);
+                        LynxI2cReadStatusQueryResponse response = new LynxI2cReadStatusQueryResponse(command.getModule());
+                        response.fromPayloadByteArray(buffer.array());
+                        response.setPayloadTimeWindow(new TimeWindow());
+                        toReturn = response;
+                        toRemove = cache;
+                        cache.byteArr = null;
+                        break;
+                    }
+                }
+                if(toRemove != null){
+                    synchronized (instance.onetimeReads) {
+                        instance.onetimeReads.get(command.getModule()).remove(toRemove);
+                    }
+                }
+            }
+        }
+        return toReturn;
     }
 
     @Override
     public void run() {
         while(threadEnabled.get()){
-            //Legacy, ignored
-            try {
-                Thread.sleep(5);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
+            if(instance.enabled.get()) {
+                HashMap<LynxModule, ArrayList<I2CReadCache>> toRead = new HashMap<>();
+                for (LynxModule module : usbDeviceMap.keySet()) {
+                    ArrayList<I2CReadCache> reading = new ArrayList<>();
+                    synchronized (onetimeReads) {
+                        if(onetimeReads.containsKey(module)) {
+                            for (I2CReadCache cache : onetimeReads.get(module)) {
+                                if (!cache.dataWritten.get()) {
+                                    if (busLocks.get(module)[cache.bus].availablePermits() > 0) {
+                                        try {
+                                            busLocks.get(module)[cache.bus].acquire();
+                                            reading.add(cache);
+                                        } catch (InterruptedException e) {
+                                            e.printStackTrace();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    synchronized (experimental) {
+                        if (experimental.caches.containsKey(module)) {
+                            for (I2CReadCache cache : experimental.caches.get(module)) {
+                                if (busLocks.get(module)[cache.bus].availablePermits() > 0) {
+                                    try {
+                                        busLocks.get(module)[cache.bus].acquire();
+                                        reading.add(cache);
+                                        cache.dataWritten.set(false);
+                                    } catch (InterruptedException e) {
+                                        e.printStackTrace();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    toRead.put(module, reading);
+                }
+                for (LynxModule module : usbDeviceMap.keySet()) {
+                    try {
+                        if (!toRead.containsKey(module))
+                            continue;
+                        long nsStart = System.nanoTime();
+                        for (I2CReadCache cache : toRead.get(module)) {
+                            LynxI2cWriteReadMultipleBytesCommand command = new LynxI2cWriteReadMultipleBytesCommand(module, cache.bus, cache.i2cAddr, cache.startAddr, cache.numRegisters);
+                            try {
+                                registerSend(command);
+                            } catch (LynxUnsupportedCommandException e) {
+                                e.printStackTrace();
+                            }
+                        }
+                        while (System.nanoTime() - nsStart < 1e+6) ;
+
+                        for (I2CReadCache cache : toRead.get(module)) {
+                            while (!cache.dataWritten.get()) {
+                                LynxI2cReadStatusQueryCommand command = new LynxI2cReadStatusQueryCommand(module, cache.bus, cache.numRegisters);
+                                try {
+                                    registerSend(command);
+                                    long start = System.currentTimeMillis();
+                                    while (!(command.isAckOrResponseReceived() || command.isNackReceived() || (System.currentTimeMillis() > (start + 500))));
+                                    if(command.isNackReceived()){
+                                        continue;
+                                    }
+                                    LynxI2cReadStatusQueryResponse response = (LynxI2cReadStatusQueryResponse) ReflectionUtils.getField(command.getClass(), "response").get(command);
+                                    cache.byteArr = response.getBytes();
+                                    cache.dataWritten.set(true);
+                                } catch (LynxUnsupportedCommandException e) {
+                                    e.printStackTrace();
+                                } catch (IllegalAccessException e) {
+                                    e.printStackTrace();
+                                }
+                            }
+                        }
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+
+                for (LynxModule module : usbDeviceMap.keySet()) {
+                    for (Semaphore semaphore : busLocks.get(module)) {
+                        if (semaphore.availablePermits() == 0) {
+                            semaphore.release();
+                        }
+                    }
+                }
+            }else{
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
             }
         }
     }
@@ -268,8 +426,9 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
 
         HardwareMap map = opMode.hardwareMap;
 
-        toGyroCache.clear();
-        bus0Locks.clear();
+        experimental.caches.clear();
+        busLocks.clear();
+        onetimeReads.clear();
 
         boolean replacedPrev = false;
         boolean hasChub = false;
@@ -301,11 +460,16 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
         HashMap<LynxModule, PhotonLynxModule> replacements = new HashMap<>();
         for(LynxModule module : instance.modules){
             moduleNames.add((String) map.getNamesOf(module).toArray()[0]);
+            if(!module.isCommandSupported(LynxI2cWriteReadMultipleBytesCommand.class)){
+                throw new PhotonUnsupportedException("Minimum Supported FW Version is 1.7. Please update your control or expansion hub!");
+            }
         }
-        LynxUsbDeviceImpl usbDevice = null, usbDevice1 = null;
+        LynxUsbDeviceImpl usbDevice = null;
         for(String s : moduleNames){
             LynxModule module = (LynxModule) map.get(LynxModule.class, s);
             if(module instanceof PhotonLynxModule){
+                busLocks.put(module, new Semaphore[]{new Semaphore(1), new Semaphore(1), new Semaphore(1), new Semaphore(1)}); //Only one device can be accessed per bus according to REV
+                onetimeReads.put(module, new ArrayList<>());
                 continue;
             }
             try {
@@ -344,6 +508,8 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
 
                         robotUsbDevice = (RobotUsbDevice) f2.get(usbDevice);
                         usbDeviceMap.put(photonLynxModule, robotUsbDevice);
+                        busLocks.put(photonLynxModule, new Semaphore[]{new Semaphore(1), new Semaphore(1), new Semaphore(1), new Semaphore(1)}); //Only one device can be accessed per bus according to REV
+                        onetimeReads.put(photonLynxModule, new ArrayList<>());
                     } catch (IllegalAccessException e) {
                         e.printStackTrace();
                     } catch(NoSuchFieldException e){
@@ -369,6 +535,7 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
                             syncLock = f3.get(usbDevice);
 
                             robotUsbDevice = (RobotUsbDevice) f2.get(usbDevice);
+                            busLocks.put(photonLynxModule, new Semaphore[]{new Semaphore(1), new Semaphore(1), new Semaphore(1), new Semaphore(1)}); //Only one device can be accessed per bus according to REV
                             usbDeviceMap.put(photonLynxModule, robotUsbDevice);
                         } catch (NoSuchFieldException e) {
                             e.printStackTrace();
@@ -437,17 +604,6 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
                         e.printStackTrace();
                     }
                 }
-                if(device instanceof BNO055IMU){
-                    BNO055ImuEx bno055ImuEx;
-                    try {
-                        I2cDeviceSynch tmp = (I2cDeviceSynch) ReflectionUtils.getField(device.getClass(), "deviceClient").get(device);
-                        bno055ImuEx = new BNO055ImuEx(tmp);
-                        replacedNeutrino.put((String) map.getNamesOf(device).toArray()[0], bno055ImuEx);
-                        removedNeutrino.put((String) map.getNamesOf(device).toArray()[0], device);
-                    } catch (IllegalAccessException e) {
-                        e.printStackTrace();
-                    }
-                }
             }
         }
 
@@ -455,12 +611,13 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
             map.remove(s, removedNeutrino.get(s));
             map.put(s, replacedNeutrino.get(s));
         }
-
-        if(thisThread == null || !thisThread.isAlive()){
-            thisThread = new Thread(this);
-            threadEnabled.set(true);
-            thisThread.start();
+        if(!(thisThread == null) && thisThread.isAlive()){
+            thisThread.interrupt();
         }
+        RobotLog.i("Enabling Thread");
+        thisThread = new Thread(this);
+        threadEnabled.set(true);
+        thisThread.start();
     }
 
     private void setLynxObject(Object device, HashMap<LynxModule, PhotonLynxModule> replacements){
@@ -490,5 +647,8 @@ public class PhotonCore implements Runnable, OpModeManagerNotifier.Notifications
     public void onOpModePostStop(OpMode opMode) {
         enabled.set(false);
         threadEnabled.set(false);
+        if(thisThread != null) {
+            thisThread.interrupt();
+        }
     }
 }

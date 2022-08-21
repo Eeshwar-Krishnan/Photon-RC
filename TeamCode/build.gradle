@@ -10,6 +10,11 @@
 // Custom definitions may go here
 // Include common definitions from above.
 apply from: '../build.common.gradle'
+
+android {
+    buildToolsVersion '30.0.3'
+    ndkVersion '25.0.8775105'
+}
 dependencies {
     /*
      * Other Modules
